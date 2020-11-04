@@ -1,0 +1,71 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+- master
+- release/*
+- develop
+- feature/*
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+# Download the pgp keys from azure secure library
+- task: DownloadSecureFile@1
+  displayName: 'Get secring.asc from Azure Secure Library'
+  inputs:
+    secureFile: "secring.asc"
+
+- task: DownloadSecureFile@1
+  displayName: 'Get pubring.asc from Azure Secure Library'
+  inputs:
+    secureFile: "pubring.asc"
+
+- script: |
+    mkdir -p /tmp/pgp && \
+    mv $(DownloadSecureFile1.secureFilePath) /tmp/pgp && \
+    mv $(DownloadSecureFile2.secureFilePath) /tmp/pgp
+  displayName: 'Move pgp keys'
+
+- script: |
+    docker-compose \
+    -f src/it/resources/docker-compose.yml \
+    up \
+    --build \
+    -d
+  displayName: 'Create a docker-compose based testing environment (including idle mozilla/sbt:8u212_1.2.13)'
+
+- script: |
+    docker exec \
+    sbt \
+    sbt "+test"
+  displayName: 'sbt test'
+
+- script: |
+    docker exec \
+    sbt \
+    sbt "+it:test"
+  displayName: 'sbt it:test'
+
+- script: |
+    docker exec \
+    -e SONATYPE_USERNAME=$(SONATYPE_USERNAME) \
+    -e SONATYPE_PASSWORD=$(SONATYPE_PASSWORD) \
+    -e PGP_PASSPHRASE=$(PGP_PASSPHRASE) \
+    sbt \
+    sbt "+publishSigned"
+  displayName: 'sbt publishSigned (push to https://oss.sonatype.org/content/groups/staging/ai/tripl/)'
+  condition: and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/heads/release'))
+
+- script: |
+    docker exec \
+    -e SONATYPE_USERNAME=$(SONATYPE_USERNAME) \
+    -e SONATYPE_PASSWORD=$(SONATYPE_PASSWORD) \
+    -e PGP_PASSPHRASE=$(PGP_PASSPHRASE) \
+    sbt \
+    sbt "sonatypeRelease"
+  displayName: 'sbt sonatypeRelease (push to https://repo1.maven.org/maven2/ai/tripl/)'
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))

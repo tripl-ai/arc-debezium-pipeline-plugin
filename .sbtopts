@@ -1,0 +1,5 @@
+-J-Xmx8G
+-J-XX:MaxMetaspaceSize=2G
+-J-XX:ReservedCodeCacheSize=1G
+-J-XX:+CMSClassUnloadingEnabled
+-J-XX:+UseG1GC
