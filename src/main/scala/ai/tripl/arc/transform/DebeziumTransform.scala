@@ -234,8 +234,11 @@ object DebeziumTransformStage {
     val schemaEncoder = org.apache.spark.sql.catalyst.encoders.RowEncoder(schema)
     val eventEncoder = org.apache.spark.sql.catalyst.encoders.RowEncoder(eventSchema)
     val eventsEncoder = org.apache.spark.sql.catalyst.encoders.RowEncoder(eventsSchema)
+    val emptyRowSeq = Seq.fill[Any](schema.length)(null)
 
-    // placeholders allows mongodb connector to return rows which respect nullable rules where the keyMask will eliminate those values in merge
+    // rowFromStringObjectMap uses the supplied schema to try to read values from a Map[String,Object] produced by the ObjectMapper from a JSON string
+    // connector is required to override some of the default behavior for different connectors
+    // placeholder allows mongodb connector to return rows which respect field nullable rules - the keyMask will ignore those placeholder values in merge
     def rowFromStringObjectMap(afterMap: Map[String,Object], connector: String, placeholders: Boolean): Row = {
       Row.fromSeq(
         schema.fields.map { field =>
@@ -309,8 +312,8 @@ object DebeziumTransformStage {
       )
     }
 
-    // apply strict ordering validation to a list of pre-ordered events
-    // iterate and ensure the state is changed correctly from one state to the next
+    // validateEvents takes a sequence of ordered events and iterates over them ensuring
+    // the previous state is expected based on the OPERATION type
     def validateEvents(events: Seq[Row]): Row = {
       events.sliding(2).foreach { window =>
         if (window.length == 2) {
@@ -337,28 +340,27 @@ object DebeziumTransformStage {
       events.last
     }
 
-    // apply strict ordering validation to a list of pre-ordered events
-    // iterate and ensure the state is changed correctly from one state to the next
+    // applyMongoPatch takes a sequence of ordered events and applies the patches in sequence
+    // it creates a Seq which is then updated in-place based on event type and uses the keyMask field to only update the impacted fields
     def applyMongoPatch(events: Seq[Row]): Row = {
       val patched = Row.fromSeq(
         events.drop(1).foldLeft(events.head.getStruct(EVENT_AFTER_INDEX).toSeq){ (accumulator, next) =>
           next.getString(EVENT_OPERATION_INDEX) match {
             case OPERATION_CREATE => {
-              // if (!(accumulator == Seq.empty)) throw new Exception(s"expected previous value to be null for operation '${OPERATION_CREATE}'")
+              if (accumulator != emptyRowSeq) throw new Exception(s"expected previous value to be null for operation '${OPERATION_CREATE}'")
               next.getStruct(EVENT_AFTER_INDEX).toSeq
             }
             case OPERATION_UPDATE => {
-              // println("update", accumulator, next)
-              // if (!(accumulator == Seq.empty)) throw new Exception(s"expected previous value to not be null for for operation '${OPERATION_UPDATE}'")
+              if (accumulator == emptyRowSeq) throw new Exception(s"expected previous value to not be null for operation '${OPERATION_UPDATE}'")
               val keyMask = next.getSeq[String](EVENT_KEYMASK_INDEX)
               val patch = next.getStruct(EVENT_AFTER_INDEX)
-              keyMask.foldLeft(accumulator){ (acc, key) =>
-                acc.updated(schema.fieldIndex(key), patch.get(schema.fieldIndex(key)))
+              keyMask.foldLeft(accumulator){ (seq, key) =>
+                seq.updated(schema.fieldIndex(key), patch.get(schema.fieldIndex(key)))
               }
             }
             case OPERATION_DELETE => {
-              // if (!(accumulator == Seq.empty)) throw new Exception(s"expected previous value to not be null for for operation '${OPERATION_DELETE}'")
-              Seq.fill[Any](schema.length)(null).updated(2, java.util.UUID.randomUUID().toString).updated(3, "DELETE")
+              if (accumulator == emptyRowSeq) throw new Exception(s"expected previous value to not be null for operation '${OPERATION_DELETE}'")
+              emptyRowSeq
             }
           }
         }
@@ -369,13 +371,18 @@ object DebeziumTransformStage {
     // todo: support avro
     val debeziumEvents = df
       .as[DebeziumStringKafkaEvent]
+      // remove debezium tombstone events
+      .filter { event => event.value != null }
       .mapPartitions { partition =>
+
         val objectMapper = new ObjectMapper()
         objectMapper.registerModule(DefaultScalaModule)
 
         var memoizedConnector: Option[String] = None
 
         partition.map { event =>
+          if (event.key == null) throw new Exception("invalid configuration. expected 'key' to not be null. ensure primary key or connector 'message.key.columns' is set.")
+
           val valueMap = objectMapper.readValue(new String(event.value, StandardCharsets.UTF_8), classOf[Map[String,Map[String,Object]]])
 
           if (!valueMap.contains("payload")) throw new Exception(s"invalid message format. missing 'value.payload' attribute. got ${valueMap.keys.mkString("["," ,","]")}")

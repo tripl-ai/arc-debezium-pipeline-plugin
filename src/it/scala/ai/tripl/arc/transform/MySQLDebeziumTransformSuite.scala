@@ -94,7 +94,6 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     |    "database.history.kafka.bootstrap.servers": "kafka:9092",
     |    "database.history.kafka.topic": "schema-changes.inventory",
     |    "decimal.handling.mode": "string",
-    |    "tombstones.on.delete": false,
     |    "message.key.columns": "inventory.${tableName}:${key}"
     |  }
     |}""".stripMargin
@@ -256,6 +255,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           // this will block the main thread but we want to process all updates before triggering awaitTermination
           var last = System.currentTimeMillis()
           var i = 0
+          var deadlocks = 0
           transactions.par.foreach { sql =>
             // if (System.currentTimeMillis() > last+1000) {
             //   last = System.currentTimeMillis()
@@ -279,9 +279,11 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
               )
             } catch {
               // not nice but sometimes get deadlocks and we can just ignore them
-              case e: com.mysql.cj.jdbc.exceptions.MySQLTransactionRollbackException if e.getMessage.contains("Deadlock found when trying to get lock") =>
+              case e: Exception if e.getMessage.contains("Deadlock") => deadlocks += 1
             }
           }
+
+          if (deadlocks > 10) throw new Exception(s"too many (${deadlocks}) transactions ignored due to database deadlock")
 
           writeStream.processAllAvailable
           writeStream.stop
@@ -399,7 +401,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
       writeStream.stop
 
       // validate results
-      assert(TestUtils.datasetEquality(knownData.drop("nullDatum"), spark.table(tableName)))
+      assert(TestUtils.datasetEquality(knownData, spark.table(tableName)))
     } catch {
       case e: Exception => fail(e.getMessage)
     } finally {

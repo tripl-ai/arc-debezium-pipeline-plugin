@@ -54,8 +54,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
   |    "mongodb.password" : "dbz",
   |    "database.whitelist": "inventory",
   |    "database.history.kafka.bootstrap.servers": "kafka:9092",
-  |    "database.history.kafka.topic": "schema-changes.inventory",
-  |    "tombstones.on.delete": false
+  |    "database.history.kafka.topic": "schema-changes.inventory"
   |  }
   |}""".stripMargin
 
