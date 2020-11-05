@@ -20,6 +20,7 @@ object Dependencies {
 
   val mysql = "mysql" % "mysql-connector-java" % "8.0.22" % "it"
   val mongo = "org.mongodb.spark" %% "mongo-spark-connector" % "3.0.0" % "it"
+  val postgresJDBC = "org.postgresql" % "postgresql" % "42.2.8" % "it"
 
   // Project
   val etlDeps = Seq(
@@ -36,5 +37,6 @@ object Dependencies {
 
     mysql,
     mongo,
+    postgresJDBC,
   )
 }

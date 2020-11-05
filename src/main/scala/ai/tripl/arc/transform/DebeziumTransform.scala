@@ -294,6 +294,7 @@ object DebeziumTransformStage {
                 case Some(v) => {
                   connector match {
                     case CONNECTOR_MONGODB => new Timestamp(Instant.parse(v.asInstanceOf[Map[String,String]].get("$date").get).toEpochMilli)
+                    case CONNECTOR_POSTGRESQL => new Timestamp(v.asInstanceOf[Long]/1000L)
                     case _ => new Timestamp(Instant.parse(v.asInstanceOf[String]).toEpochMilli)
                   }
                 }
@@ -307,6 +308,7 @@ object DebeziumTransformStage {
               }
             }
             case NullType => null
+            case _ => throw new Exception(s"unsupported type for field '${field.name}'")
           }
         }.toSeq
       )
@@ -320,7 +322,7 @@ object DebeziumTransformStage {
           val previous = window(0)
           val next = window(1)
           next.getString(EVENT_OPERATION_INDEX) match {
-            case OPERATION_CREATE => if (!previous.isNullAt(EVENT_AFTER_INDEX)) throw new Exception(s"expected previous value to be null for operation '${OPERATION_CREATE}'")
+            case OPERATION_CREATE | OPERATION_READ => if (!previous.isNullAt(EVENT_AFTER_INDEX)) throw new Exception(s"expected previous value to be null for operation '${OPERATION_CREATE}'")
             case OPERATION_UPDATE => {
               if (previous.isNullAt(EVENT_AFTER_INDEX) || next.isNullAt(EVENT_BEFORE_INDEX) || previous.getStruct(EVENT_AFTER_INDEX) != next.getStruct(EVENT_BEFORE_INDEX)) {
                 throw new Exception(s"expected previous value to equal next before value for operation '${OPERATION_UPDATE}'")
@@ -334,7 +336,7 @@ object DebeziumTransformStage {
           }
         } else {
           val next = window(0)
-          if (next.getString(EVENT_OPERATION_INDEX) != OPERATION_CREATE) throw new Exception(s"expected previous value to be null for operation '${OPERATION_CREATE}'")
+          if (!Seq(OPERATION_CREATE, OPERATION_READ).contains(next.getString(EVENT_OPERATION_INDEX))) throw new Exception(s"expected previous value to be null for operations ['${OPERATION_CREATE}', '${OPERATION_READ}']")
         }
       }
       events.last
@@ -346,7 +348,7 @@ object DebeziumTransformStage {
       val patched = Row.fromSeq(
         events.drop(1).foldLeft(events.head.getStruct(EVENT_AFTER_INDEX).toSeq){ (accumulator, next) =>
           next.getString(EVENT_OPERATION_INDEX) match {
-            case OPERATION_CREATE => {
+            case OPERATION_CREATE | OPERATION_READ => {
               if (accumulator != emptyRowSeq) throw new Exception(s"expected previous value to be null for operation '${OPERATION_CREATE}'")
               next.getStruct(EVENT_AFTER_INDEX).toSeq
             }
@@ -409,7 +411,7 @@ object DebeziumTransformStage {
               val before = if (stage.strict) {
                 if (!payload.contains("before")) throw new Exception(s"invalid message format. missing 'value.payload.before' attribute. got ${payload.keys.mkString("["," ,","]")}")
                 operation match {
-                  case OPERATION_CREATE => Try(payload.get("before").get.asInstanceOf[scala.Null]).getOrElse(throw new Exception(s"invalid message format. expected 'value.payload.before' to be null for operation '${OPERATION_CREATE}'."))
+                  case OPERATION_CREATE | OPERATION_READ => Try(payload.get("before").get.asInstanceOf[scala.Null]).getOrElse(throw new Exception(s"invalid message format. expected 'value.payload.before' to be null for operation '${OPERATION_CREATE}'."))
                   case OPERATION_UPDATE | OPERATION_DELETE => rowFromStringObjectMap(Try(payload.get("before").get.asInstanceOf[Map[String,Object]]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.before' to be Object.")), connector, false)
                 }
               } else {

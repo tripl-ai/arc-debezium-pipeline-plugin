@@ -42,7 +42,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
   val database = "inventory"
   val mongoClientURI = s"mongodb://debezium:dbz@mongodb:27017/${database}?authSource=admin&replicaSet=rs0"
   val connectURI = s"http://connect:8083/connectors/"
-  val connectorName = "inventory-connector"
+  val connectorName = "inventory-connector-mongo"
   val connectorConfig = s"""{
   |  "name": "${connectorName}",
   |  "config": {
@@ -96,6 +96,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
 
   after {
     FileUtils.deleteQuietly(new java.io.File(checkpointLocation))
+    session.stop
   }
 
   sealed trait Operation
@@ -246,7 +247,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     implicit val logger = TestUtils.getLogger()
     implicit val arcContext = TestUtils.getARCContext(isStreaming = true)
 
-    val (customerInitial, customerUpdates) = TestHelpers.getTestData(10000)
+    val (customerInitial, customerUpdates) = TestHelpers.getTestData(50000)
     val customersMetadata = MetadataUtils.createMetadataDataframe(customerInitial.toDF.withColumnRenamed("c_custkey", "_id"))
     customersMetadata.persist
     customersMetadata.createOrReplaceTempView(schema)
@@ -255,7 +256,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     for (seed <- 0 to 2) {
       for (strict <- Seq(true)) {
         val tableName = s"customers_${UUID.randomUUID.toString.replaceAll("-","")}"
-        println(s"${if (strict) "strict" else "not-strict"} seed: ${seed} target: ${tableName}")
+        println(s"mongo ${if (strict) "strict" else "not-strict"} seed: ${seed} target: ${tableName}")
 
         customerInitial.withColumnRenamed("c_custkey", "_id").write.format("com.mongodb.spark.sql").options(WriteConfig(Map("uri" -> mongoClientURI, "collection" -> tableName)).asOptions).save
 
@@ -297,6 +298,14 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         val mongoCollection = mongoClient.getDatabase(database).getCollection(tableName)
 
         try {
+          // wait for query to start
+          val start = System.currentTimeMillis()
+          while (writeStream.lastProgress == null || (writeStream.lastProgress != null && writeStream.lastProgress.numInputRows == 0)) {
+            if (System.currentTimeMillis() > start + 60000) throw new Exception("Timeout without messages arriving")
+            println("Waiting for query progress...")
+            Thread.sleep(1000)
+          }
+
           transactions.par.foreach { transaction =>
             val mongoSession = mongoClient.startSession(ClientSessionOptions.builder.defaultTransactionOptions(TransactionOptions.builder.readConcern(ReadConcern.MAJORITY).writeConcern(WriteConcern.MAJORITY).build).build)
             mongoSession.startTransaction
@@ -379,6 +388,14 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
       .start
 
     try {
+      // wait for query to start
+      val start = System.currentTimeMillis()
+      while (writeStream.lastProgress == null || (writeStream.lastProgress != null && writeStream.lastProgress.numInputRows == 0)) {
+        if (System.currentTimeMillis() > start + 60000) throw new Exception("Timeout without messages arriving")
+        println("Waiting for query progress...")
+        Thread.sleep(1000)
+      }
+
       writeStream.processAllAvailable
       writeStream.stop
 

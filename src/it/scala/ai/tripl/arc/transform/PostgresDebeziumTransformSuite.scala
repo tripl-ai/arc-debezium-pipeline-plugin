@@ -25,7 +25,7 @@ import ai.tripl.arc.udf.UDF
 
 import ai.tripl.arc.util._
 
-class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
+class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
 
   var session: SparkSession = _
 
@@ -34,9 +34,9 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
   val schema = "schema"
   val checkpointLocation = "/tmp/debezium"
 
-  val mysqlURL = "jdbc:mysql://mysql:3306/inventory?user=root&password=debezium&allowMultiQueries=true"
+  val postgresURL = "jdbc:postgresql://postgres:5432/?user=postgres&password=postgres"
   val connectURI = s"http://connect:8083/connectors/"
-  val connectorName = "inventory-connector-mysql"
+  val connectorName = "inventory-connector-postgres"
 
   before {
     implicit val spark = SparkSession
@@ -83,17 +83,17 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     s"""{
     |  "name": "${connectorName}",
     |  "config": {
-    |    "connector.class": "io.debezium.connector.mysql.MySqlConnector",
+    |    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
     |    "tasks.max": "1",
-    |    "database.hostname": "mysql",
-    |    "database.port": "3306",
-    |    "database.user": "debezium",
-    |    "database.password": "dbz",
-    |    "database.server.id": "184054",
-    |    "database.server.name": "dbserver2",
-    |    "database.whitelist": "inventory",
+    |    "database.hostname": "postgres",
+    |    "database.port": "5432",
+    |    "database.user": "postgres",
+    |    "database.password": "postgres",
+    |    "database.dbname": "postgres",
+    |    "database.server.name": "dbserver1",
     |    "database.history.kafka.bootstrap.servers": "kafka:9092",
     |    "database.history.kafka.topic": "schema-changes.inventory",
+    |    "schema.whitelist": "inventory",
     |    "message.key.columns": "${tableName}:${key}",
     |    "decimal.handling.mode": "string"
     |  }
@@ -185,7 +185,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     (transactions, updates, inserts, deletes)
   }
 
-  test("MySQLDebeziumTransform" ) {
+  test("PostgresDebeziumTransform" ) {
     implicit val spark = session
     import spark.implicits._
     implicit val logger = TestUtils.getLogger()
@@ -200,7 +200,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     for (seed <- 0 to 2) {
       for (strict <- Seq(true, false)) {
         val tableName = s"customers_${UUID.randomUUID.toString.replaceAll("-","")}"
-        println(s"mysql ${if (strict) "strict" else "not-strict"} seed: ${seed} target: ${tableName}")
+        println(s"postgres ${if (strict) "strict" else "not-strict"} seed: ${seed} target: ${tableName}")
 
         ai.tripl.arc.execute.JDBCExecuteStage.execute(
           ai.tripl.arc.execute.JDBCExecuteStage(
@@ -208,14 +208,14 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             id=None,
             name="JDBCExecute",
             description=None,
-            inputURI=new URI(mysqlURL),
-            jdbcURL=mysqlURL,
+            inputURI=new URI(postgresURL),
+            jdbcURL=postgresURL,
             sql=makeTransaction(Seq(s"CREATE TABLE ${tableName} (c_custkey INTEGER PRIMARY KEY NOT NULL, c_name VARCHAR(25) NOT NULL, c_address VARCHAR(40) NOT NULL, c_nationkey INTEGER NOT NULL, c_phone VARCHAR(15) NOT NULL, c_acctbal DECIMAL(20,2) NOT NULL, c_mktsegment VARCHAR(10) NOT NULL, c_comment VARCHAR(117) NOT NULL);")),
             params=Map.empty,
             sqlParams=Map.empty
           )
         )
-        customerInitial.write.mode("append").jdbc(mysqlURL, s"inventory.${tableName}", new java.util.Properties)
+        customerInitial.write.mode("append").jdbc(postgresURL, s"inventory.${tableName}", new java.util.Properties)
 
         // make transactions
         val (transactions, update, insert, delete) = makeTransactions(customerInitial, customerUpdates, tableName, seed)
@@ -226,7 +226,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           .readStream
           .format("kafka")
           .option("kafka.bootstrap.servers", "kafka:9092")
-          .option("subscribe", s"dbserver2.inventory.${tableName}")
+          .option("subscribe", s"dbserver1.inventory.${tableName}")
           .option("startingOffsets", "earliest")
           .load
         readStream.createOrReplaceTempView(inputView)
@@ -264,7 +264,6 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           // this will block the main thread but we want to process all updates before triggering awaitTermination
           var last = System.currentTimeMillis()
           var i = 0
-          var deadlocks = 0
           transactions.par.foreach { sql =>
             if (System.currentTimeMillis() > last+1000) {
               last = System.currentTimeMillis()
@@ -272,27 +271,20 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
               i = 0
             }
             i += 1
-            try {
-              ai.tripl.arc.execute.JDBCExecuteStage.execute(
-                ai.tripl.arc.execute.JDBCExecuteStage(
-                  plugin=new ai.tripl.arc.execute.JDBCExecute,
-                  id=None,
-                  name="JDBCExecute",
-                  description=None,
-                  inputURI=new URI(mysqlURL),
-                  jdbcURL=mysqlURL,
-                  sql=sql,
-                  params=Map.empty,
-                  sqlParams=Map.empty
-                )
+            ai.tripl.arc.execute.JDBCExecuteStage.execute(
+              ai.tripl.arc.execute.JDBCExecuteStage(
+                plugin=new ai.tripl.arc.execute.JDBCExecute,
+                id=None,
+                name="JDBCExecute",
+                description=None,
+                inputURI=new URI(postgresURL),
+                jdbcURL=postgresURL,
+                sql=sql,
+                params=Map.empty,
+                sqlParams=Map.empty
               )
-            } catch {
-              // not nice but sometimes get deadlocks and we can just ignore them
-              case e: Exception if e.getMessage.contains("Deadlock") => deadlocks += 1
-            }
+            )
           }
-
-          if (deadlocks > 10) throw new Exception(s"too many (${deadlocks}) transactions ignored due to database deadlock")
 
           writeStream.processAllAvailable
           writeStream.stop
@@ -306,8 +298,8 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
               description=None,
               schema=Right(Nil),
               outputView="expected",
-              jdbcURL=mysqlURL,
-              driver=DriverManager.getDriver(mysqlURL),
+              jdbcURL=postgresURL,
+              driver=DriverManager.getDriver(postgresURL),
               tableName=s"inventory.${tableName}",
               numPartitions=None,
               fetchsize=None,
@@ -333,8 +325,8 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
               id=None,
               name="JDBCExecute",
               description=None,
-              inputURI=new URI(mysqlURL),
-              jdbcURL=mysqlURL,
+              inputURI=new URI(postgresURL),
+              jdbcURL=postgresURL,
               sql=makeTransaction(Seq(s"DROP TABLE inventory.${tableName};")),
               params=Map.empty,
               sqlParams=Map.empty
@@ -346,7 +338,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     }
   }
 
-  test("MySQLDebeziumTransform: Types") {
+  test("PostgresDebeziumTransform: Types") {
     implicit val spark = session
     import spark.implicits._
     implicit val logger = TestUtils.getLogger()
@@ -365,15 +357,15 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         id=None,
         name="JDBCExecute",
         description=None,
-        inputURI=new URI(mysqlURL),
-        jdbcURL=mysqlURL,
-        sql=makeTransaction(Seq(s"CREATE TABLE ${tableName} (booleanDatum BOOLEAN NOT NULL, dateDatum DATE NOT NULL, decimalDatum DECIMAL(10,3) NOT NULL, doubleDatum DOUBLE NOT NULL, integerDatum INTEGER NOT NULL, longDatum BIGINT NOT NULL, stringDatum VARCHAR(255) NOT NULL, timeDatum VARCHAR(255) NOT NULL, timestampDatum TIMESTAMP NOT NULL);")),
+        inputURI=new URI(postgresURL),
+        jdbcURL=postgresURL,
+        sql=makeTransaction(Seq(s"CREATE TABLE ${tableName} (booleanDatum BOOLEAN NOT NULL, dateDatum DATE NOT NULL, decimalDatum DECIMAL(10,3) NOT NULL, doubleDatum DOUBLE PRECISION NOT NULL, integerDatum INTEGER NOT NULL, longDatum BIGINT NOT NULL, stringDatum VARCHAR(255) NOT NULL, timeDatum VARCHAR(255) NOT NULL, timestampDatum TIMESTAMP NOT NULL);")),
         params=Map.empty,
         sqlParams=Map.empty
       )
     )
 
-    knownData.write.mode("append").jdbc(mysqlURL, s"inventory.${tableName}", new java.util.Properties)
+    knownData.write.mode("append").jdbc(postgresURL, s"inventory.${tableName}", new java.util.Properties)
 
     TestHelpers.registerConnector(connectURI, makeConnectorConfig(s"inventory.${tableName}", "integerDatum"))
 
@@ -381,7 +373,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
       .readStream
       .format("kafka")
       .option("kafka.bootstrap.servers", "kafka:9092")
-      .option("subscribe", s"dbserver2.inventory.${tableName}")
+      .option("subscribe", s"dbserver1.inventory.${tableName}")
       .option("startingOffsets", "earliest")
       .load
     readStream.createOrReplaceTempView(inputView)
@@ -424,15 +416,14 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
       case e: Exception => fail(e.getMessage)
     } finally {
       TestHelpers.deleteConnector(connectURI, connectorName)
-      TestHelpers.deleteConnector(connectURI, s"${connectorName}-dbhistory")
       ai.tripl.arc.execute.JDBCExecuteStage.execute(
         ai.tripl.arc.execute.JDBCExecuteStage(
           plugin=new ai.tripl.arc.execute.JDBCExecute,
           id=None,
           name="JDBCExecute",
           description=None,
-          inputURI=new URI(mysqlURL),
-          jdbcURL=mysqlURL,
+          inputURI=new URI(postgresURL),
+          jdbcURL=postgresURL,
           sql=makeTransaction(Seq(s"DROP TABLE inventory.${tableName};")),
           params=Map.empty,
           sqlParams=Map.empty

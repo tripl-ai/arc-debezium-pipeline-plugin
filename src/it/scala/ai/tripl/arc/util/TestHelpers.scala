@@ -38,7 +38,7 @@ object TestHelpers {
       ).as[Customer]
     customerRaw.createOrReplaceTempView("customer")
     val count = customerRaw.cache.count
-    val splitAt = (count * 0.7).toInt
+    val splitAt = (count * 0.6).toInt
     val customerInitial = customerRaw.where(s"c_custkey <= ${splitAt}")
     customerInitial.persist
 
