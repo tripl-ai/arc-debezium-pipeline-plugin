@@ -1,0 +1,114 @@
+---
+version: '3.5'
+
+networks:
+  arc-integration:
+    name: arc-integration
+    driver: bridge
+    ipam:
+     config:
+       - subnet: 172.19.0.0/24
+
+services:
+  sbt:
+    container_name: sbt
+    image: mozilla/sbt:8u232_1.3.13
+    networks:
+      - arc-integration
+    links:
+     - kafka
+     - connect
+     - mysql
+     - mongodb
+     - postgres
+    command: tail -f /dev/null
+    volumes:
+      - ${PWD}:/app
+      - /tmp/pgp:/pgp
+    working_dir: /app
+    ports:
+     - 4040:4040
+
+  zookeeper:
+    image: debezium/zookeeper:1.3
+    networks:
+      - arc-integration
+    ports:
+     - 2181:2181
+     - 2888:2888
+     - 3888:3888
+
+  kafka:
+    image: debezium/kafka:1.3
+    networks:
+      - arc-integration
+    ports:
+     - 9092:9092
+    links:
+     - zookeeper
+    environment:
+     - ZOOKEEPER_CONNECT=zookeeper:2181
+
+  connect:
+    image: debezium/connect:1.3
+    networks:
+      - arc-integration
+    ports:
+     - 8083:8083
+    links:
+     - kafka
+     - mysql
+     - postgres
+     - mongodb
+    environment:
+     - BOOTSTRAP_SERVERS=kafka:9092
+     - GROUP_ID=1
+     - CONFIG_STORAGE_TOPIC=my_connect_configs
+     - OFFSET_STORAGE_TOPIC=my_connect_offsets
+     - STATUS_STORAGE_TOPIC=my_connect_statuses
+
+  mysql:
+    image: arc/debezium-mysql:1.3
+    networks:
+      - arc-integration
+    build: mysql/.
+    ports:
+     - 3306:3306
+    environment:
+     - MYSQL_ROOT_PASSWORD=debezium
+     - MYSQL_USER=mysqluser
+     - MYSQL_PASSWORD=mysqlpw
+
+  postgres:
+    image: arc/debezium-postgres:1.3
+    networks:
+      - arc-integration
+    build: postgres/.
+    ports:
+     - 5432:5432
+    environment:
+     - POSTGRES_USER=postgres
+     - POSTGRES_PASSWORD=postgres
+
+  mongodb:
+    image: arc/debezium-mongodb:1.3
+    networks:
+      - arc-integration
+    build: mongodb/.
+    ports:
+     - 27017:27017
+    environment:
+     - MONGO_INITDB_ROOT_USERNAME=admin
+     - MONGO_INITDB_ROOT_PASSWORD=admin
+     - MONGODB_USER=debezium
+     - MONGODB_PASSWORD=dbz
+
+  mongodb-seed:
+    image: arc/debezium-mongodb:1.3
+    networks:
+      - arc-integration
+    command: /usr/local/bin/init-inventory.sh
+    links:
+     - mongodb
+    depends_on:
+     - mongodb
