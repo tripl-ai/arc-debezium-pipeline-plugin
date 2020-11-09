@@ -253,7 +253,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     customersMetadata.createOrReplaceTempView(schema)
 
     println()
-    for (seed <- 0 to 2) {
+    for (seed <- 0 to 0) {
       for (strict <- Seq(true)) {
         val tableName = s"customers_${UUID.randomUUID.toString.replaceAll("-","")}"
         println(s"mongo ${if (strict) "strict" else "not-strict"} seed: ${seed} target: ${tableName}")
@@ -301,12 +301,22 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           // wait for query to start
           val start = System.currentTimeMillis()
           while (writeStream.lastProgress == null || (writeStream.lastProgress != null && writeStream.lastProgress.numInputRows == 0)) {
-            if (System.currentTimeMillis() > start + 60000) throw new Exception("Timeout without messages arriving")
+            if (System.currentTimeMillis() > start + 180000) throw new Exception("Timeout without messages arriving")
             println("Waiting for query progress...")
             Thread.sleep(1000)
           }
 
+          // while running perform PARALLEL insert/update/delete transactions
+          // this will block the main thread but we want to process all updates before triggering awaitTermination
+          var last = System.currentTimeMillis()
+          var i = 0
           transactions.par.foreach { transaction =>
+            if (System.currentTimeMillis() > last+1000) {
+              last = System.currentTimeMillis()
+              println(s"${i} transactions/sec")
+              i = 0
+            }
+            i += 1
             val mongoSession = mongoClient.startSession(ClientSessionOptions.builder.defaultTransactionOptions(TransactionOptions.builder.readConcern(ReadConcern.MAJORITY).writeConcern(WriteConcern.MAJORITY).build).build)
             mongoSession.startTransaction
             transaction.foreach { t =>
@@ -391,7 +401,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
       // wait for query to start
       val start = System.currentTimeMillis()
       while (writeStream.lastProgress == null || (writeStream.lastProgress != null && writeStream.lastProgress.numInputRows == 0)) {
-        if (System.currentTimeMillis() > start + 60000) throw new Exception("Timeout without messages arriving")
+        if (System.currentTimeMillis() > start + 180000) throw new Exception("Timeout without messages arriving")
         println("Waiting for query progress...")
         Thread.sleep(1000)
       }
