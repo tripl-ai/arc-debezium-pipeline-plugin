@@ -197,7 +197,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     customersMetadata.createOrReplaceTempView(schema)
 
     println()
-    for (seed <- 0 to 2) {
+    for (seed <- 0 to 0) {
       for (strict <- Seq(true, false)) {
         val tableName = s"customers_${UUID.randomUUID.toString.replaceAll("-","")}"
         println(s"postgres ${if (strict) "strict" else "not-strict"} seed: ${seed} target: ${tableName}")
@@ -267,7 +267,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           transactions.par.foreach { sql =>
             if (System.currentTimeMillis() > last+1000) {
               last = System.currentTimeMillis()
-              println(s"${i} sql transactions/sec")
+              println(s"${i} transactions/sec")
               i = 0
             }
             i += 1
