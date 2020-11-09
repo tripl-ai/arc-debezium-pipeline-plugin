@@ -185,7 +185,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     (transactions, updates, inserts, deletes)
   }
 
-  test("MySQLDebeziumTransform" ) {
+  test("MySQLDebeziumTransform") {
     implicit val spark = session
     import spark.implicits._
     implicit val logger = TestUtils.getLogger()

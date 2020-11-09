@@ -185,7 +185,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     (transactions, updates, inserts, deletes)
   }
 
-  test("PostgresDebeziumTransform" ) {
+  test("PostgresDebeziumTransform") {
     implicit val spark = session
     import spark.implicits._
     implicit val logger = TestUtils.getLogger()
