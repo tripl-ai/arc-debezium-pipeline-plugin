@@ -36,7 +36,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
   val schema = "schema"
   val checkpointLocation = "/tmp/debezium"
 
-  val postgresURL = "jdbc:postgresql://postgres:5432/?user=postgres&password=postgres"
+  val postgresURL = "jdbc:postgresql://postgres:5432/inventory?user=postgres&password=postgres"
   val connectURI = s"http://connect:8083/connectors/"
   val connectorName = "inventory-connector-postgres"
 
@@ -46,9 +46,9 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
                   .master("local[*]")
                   .config("spark.ui.port", "4040")
                   .config("spark.checkpoint.compress", "true")
+                  .config("spark.sql.shuffle.partitions", 8)
                   .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-                  .config("spark.kryo.unsafe", "true")
-                  .config("spark.kryoserializer.buffer.max", "1024m")
+                  .config("spark.kryoserializer.buffer.max", "2047m")
                   .config("spark.sql.streaming.checkpointLocation", checkpointLocation)
                   .config("spark.sql.streaming.forceDeleteTempCheckpointLocation", "true")
                   .appName("Arc Test")
@@ -215,12 +215,12 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             description=None,
             inputURI=new URI(postgresURL),
             jdbcURL=postgresURL,
-            sql=makeTransaction(Seq(s"CREATE TABLE inventory.${tableName} (c_custkey INTEGER PRIMARY KEY NOT NULL, c_name VARCHAR(25) NOT NULL, c_address VARCHAR(40) NOT NULL, c_nationkey INTEGER NOT NULL, c_phone VARCHAR(15) NOT NULL, c_acctbal DECIMAL(20,2) NOT NULL, c_mktsegment VARCHAR(10) NOT NULL, c_comment VARCHAR(117) NOT NULL);")),
+            sql=makeTransaction(Seq(s"CREATE TABLE ${tableName} (c_custkey INTEGER PRIMARY KEY NOT NULL, c_name VARCHAR(25) NOT NULL, c_address VARCHAR(40) NOT NULL, c_nationkey INTEGER NOT NULL, c_phone VARCHAR(15) NOT NULL, c_acctbal DECIMAL(20,2) NOT NULL, c_mktsegment VARCHAR(10) NOT NULL, c_comment VARCHAR(117) NOT NULL);")),
             params=Map.empty,
             sqlParams=Map.empty
           )
         )
-        customerInitial.write.mode("append").jdbc(postgresURL, s"inventory.${tableName}", new java.util.Properties)
+        customerInitial.write.mode("append").jdbc(postgresURL, s"${tableName}", new java.util.Properties)
 
         // make transactions
         val (transactions, update, insert, delete) = makeTransactions(customerInitial, customerUpdates, tableName, seed)
@@ -322,6 +322,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
               params=Map.empty
             )
           ).get
+          assert(expected.count > customerInitial.count)
           assert(TestUtils.datasetEquality(expected, spark.table(tableName)))
           println("PASS\n")
 
@@ -370,13 +371,13 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         description=None,
         inputURI=new URI(postgresURL),
         jdbcURL=postgresURL,
-        sql=makeTransaction(Seq(s"CREATE TABLE inventory.${tableName} (booleanDatum BOOLEAN NOT NULL, dateDatum DATE NOT NULL, decimalDatum DECIMAL(10,3) NOT NULL, doubleDatum DOUBLE PRECISION NOT NULL, integerDatum INTEGER NOT NULL, longDatum BIGINT NOT NULL, stringDatum VARCHAR(255) NOT NULL, timeDatum VARCHAR(255) NOT NULL, timestampDatum TIMESTAMP NOT NULL);")),
+        sql=makeTransaction(Seq(s"CREATE TABLE ${tableName} (booleanDatum BOOLEAN NOT NULL, dateDatum DATE NOT NULL, decimalDatum DECIMAL(10,3) NOT NULL, doubleDatum DOUBLE PRECISION NOT NULL, integerDatum INTEGER NOT NULL, longDatum BIGINT NOT NULL, stringDatum VARCHAR(255) NOT NULL, timeDatum VARCHAR(255) NOT NULL, timestampDatum TIMESTAMP NOT NULL);")),
         params=Map.empty,
         sqlParams=Map.empty
       )
     )
 
-    knownData.write.mode("append").jdbc(postgresURL, s"inventory.${tableName}", new java.util.Properties)
+    knownData.write.mode("append").jdbc(postgresURL, s"${tableName}", new java.util.Properties)
 
     TestHelpers.registerConnector(connectURI, makeConnectorConfig(s"inventory.${tableName}", "integerDatum"))
 
@@ -440,7 +441,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           description=None,
           inputURI=new URI(postgresURL),
           jdbcURL=postgresURL,
-          sql=makeTransaction(Seq(s"DROP TABLE inventory.${tableName};")),
+          sql=makeTransaction(Seq(s"DROP TABLE ${tableName};")),
           params=Map.empty,
           sqlParams=Map.empty
         )
@@ -475,15 +476,28 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             description=None,
             inputURI=new URI(postgresURL),
             jdbcURL=postgresURL,
-            sql=makeTransaction(Seq(s"CREATE TABLE inventory.${tableName} (c_custkey INTEGER PRIMARY KEY NOT NULL, c_name VARCHAR(25) NOT NULL, c_address VARCHAR(40) NOT NULL, c_nationkey INTEGER NOT NULL, c_phone VARCHAR(15) NOT NULL, c_acctbal DECIMAL(20,2) NOT NULL, c_mktsegment VARCHAR(10) NOT NULL, c_comment VARCHAR(117) NOT NULL);")),
+            sql=makeTransaction(Seq(s"CREATE TABLE ${tableName} (c_custkey INTEGER NOT NULL, c_name VARCHAR(25) NOT NULL, c_address VARCHAR(40) NOT NULL, c_nationkey INTEGER NOT NULL, c_phone VARCHAR(15) NOT NULL, c_acctbal DECIMAL(20,2) NOT NULL, c_mktsegment VARCHAR(10) NOT NULL, c_comment VARCHAR(117) NOT NULL);")),
             params=Map.empty,
             sqlParams=Map.empty
           )
         )
-        customerInitial.write.mode("append").jdbc(postgresURL, s"inventory.${tableName}", new java.util.Properties)
+        customerInitial.write.mode("append").jdbc(postgresURL, tableName, new java.util.Properties)
+        ai.tripl.arc.execute.JDBCExecuteStage.execute(
+          ai.tripl.arc.execute.JDBCExecuteStage(
+            plugin=new ai.tripl.arc.execute.JDBCExecute,
+            id=None,
+            name="JDBCExecute",
+            description=None,
+            inputURI=new URI(postgresURL),
+            jdbcURL=postgresURL,
+            sql=makeTransaction(Seq(s"ALTER TABLE ${tableName} ADD CONSTRAINT c_custkey_pk PRIMARY KEY (c_custkey);")),
+            params=Map.empty,
+            sqlParams=Map.empty
+          )
+        )
 
         // make transactions
-        val (transactions, update, insert, delete) = makeTransactions(customerInitial, customerUpdates, s"inventory.${tableName}", seed)
+        val (transactions, update, insert, delete) = makeTransactions(customerInitial, customerUpdates, tableName, seed)
 
         // while running perform PARALLEL insert/update/delete transactions
         // this will block the main thread but we want to process all updates before triggering awaitTermination
@@ -555,9 +569,14 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             .sortBy(row => row.offset)
             .toList
 
+          // make sure the updates have happened
+          assert(read.size > customerInitial.count)
+
           // recursively apply the records passing in the previous state
-          println(s"processing ${read.size} events...")
-          read.grouped(size/3).zipWithIndex.foreach { case (batch, index) =>
+          val batches = 3
+          println(s"processing ${read.size} events in ${batches} ${read.size/batches} record batches...")
+          read.grouped(read.size/batches).zipWithIndex.foreach { case (batch, index) =>
+            val start = System.currentTimeMillis()
             batch.toDF.createOrReplaceTempView(inputView)
             transform.DebeziumTransformStage.execute(
               transform.DebeziumTransformStage(
@@ -576,9 +595,9 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
                 partitionBy=List.empty,
               )
             )
-
             val output = spark.table(outputView)
             output.createOrReplaceTempView(initialStateView)
+            println(s"processed batch ${index} of ${batch.length} records in ${System.currentTimeMillis()-start}ms...")
           }
 
           // validate results
@@ -612,19 +631,19 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         } finally {
           TestHelpers.deleteConnector(connectURI, connectorName)
           TestHelpers.deleteConnector(connectURI, s"${connectorName}-dbhistory")
-          // ai.tripl.arc.execute.JDBCExecuteStage.execute(
-          //   ai.tripl.arc.execute.JDBCExecuteStage(
-          //     plugin=new ai.tripl.arc.execute.JDBCExecute,
-          //     id=None,
-          //     name="JDBCExecute",
-          //     description=None,
-          //     inputURI=new URI(postgresURL),
-          //     jdbcURL=postgresURL,
-          //     sql=makeTransaction(Seq(s"DROP TABLE inventory.${tableName};")),
-          //     params=Map.empty,
-          //     sqlParams=Map.empty
-          //   )
-          // )
+          ai.tripl.arc.execute.JDBCExecuteStage.execute(
+            ai.tripl.arc.execute.JDBCExecuteStage(
+              plugin=new ai.tripl.arc.execute.JDBCExecute,
+              id=None,
+              name="JDBCExecute",
+              description=None,
+              inputURI=new URI(postgresURL),
+              jdbcURL=postgresURL,
+              sql=makeTransaction(Seq(s"DROP TABLE ${tableName};")),
+              params=Map.empty,
+              sqlParams=Map.empty
+            )
+          )
           writeStream.stop
         }
       }

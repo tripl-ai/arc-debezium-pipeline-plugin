@@ -46,10 +46,9 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
                   .master("local[*]")
                   .config("spark.ui.port", "4040")
                   .config("spark.checkpoint.compress", "true")
-                  .config("spark.sql.shuffle.partitions", 1)
+                  .config("spark.sql.shuffle.partitions", 4)
                   .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-                  .config("spark.kryo.unsafe", "true")
-                  .config("spark.kryoserializer.buffer.max", "1024m")
+                  .config("spark.kryoserializer.buffer.max", "2047m")
                   .config("spark.sql.streaming.checkpointLocation", checkpointLocation)
                   .config("spark.sql.streaming.forceDeleteTempCheckpointLocation", "true")
                   .appName("Arc Test")
@@ -190,289 +189,20 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     (transactions, updates, inserts, deletes)
   }
 
-  // test("MySQLDebeziumTransform: Streaming") {
-  //   implicit val spark = session
-  //   import spark.implicits._
-  //   implicit val logger = TestUtils.getLogger()
-  //   implicit val arcContext = TestUtils.getARCContext(isStreaming = true)
-
-  //   val (customerInitial, customerUpdates) = TestHelpers.getTestData(50000)
-  //   val customersMetadata = MetadataUtils.createMetadataDataframe(customerInitial.toDF)
-  //   customersMetadata.persist
-  //   customersMetadata.createOrReplaceTempView(schema)
-
-  //   println()
-  //   for (seed <- 0 to 0) {
-  //     for (strict <- Seq(true, false)) {
-  //       val tableName = s"customers_${UUID.randomUUID.toString.replaceAll("-","")}"
-  //       println(s"mysql ${if (strict) "strict" else "not-strict"} seed: ${seed} target: ${tableName}")
-
-  //       ai.tripl.arc.execute.JDBCExecuteStage.execute(
-  //         ai.tripl.arc.execute.JDBCExecuteStage(
-  //           plugin=new ai.tripl.arc.execute.JDBCExecute,
-  //           id=None,
-  //           name="JDBCExecute",
-  //           description=None,
-  //           inputURI=new URI(mysqlURL),
-  //           jdbcURL=mysqlURL,
-  //           sql=makeTransaction(Seq(s"CREATE TABLE ${tableName} (c_custkey INTEGER PRIMARY KEY NOT NULL, c_name VARCHAR(25) NOT NULL, c_address VARCHAR(40) NOT NULL, c_nationkey INTEGER NOT NULL, c_phone VARCHAR(15) NOT NULL, c_acctbal DECIMAL(20,2) NOT NULL, c_mktsegment VARCHAR(10) NOT NULL, c_comment VARCHAR(117) NOT NULL);")),
-  //           params=Map.empty,
-  //           sqlParams=Map.empty
-  //         )
-  //       )
-  //       customerInitial.write.mode("append").jdbc(mysqlURL, s"inventory.${tableName}", new java.util.Properties)
-
-  //       // make transactions
-  //       val (transactions, update, insert, delete) = makeTransactions(customerInitial, customerUpdates, tableName, seed)
-
-  //       TestHelpers.registerConnector(connectURI, makeConnectorConfig(s"inventory.${tableName}", "c_custkey"))
-
-  //       val readStream = spark
-  //         .readStream
-  //         .format("kafka")
-  //         .option("kafka.bootstrap.servers", "kafka:9092")
-  //         .option("subscribe", s"dbserver2.inventory.${tableName}")
-  //         .option("startingOffsets", "earliest")
-  //         .load
-  //       readStream.createOrReplaceTempView(inputView)
-
-  //       transform.DebeziumTransformStage.execute(
-  //         transform.DebeziumTransformStage(
-  //           plugin=new transform.DebeziumTransform,
-  //           id=None,
-  //           name="DebeziumTransform",
-  //           description=None,
-  //           inputView=inputView,
-  //           outputView=outputView,
-  //           schema=Left(schema),
-  //           strict=strict,
-  //           initialStateView=None,
-  //           initialStateKey=None,
-  //           persist=false,
-  //           numPartitions=None,
-  //           partitionBy=List.empty,
-  //         )
-  //       )
-
-  //       val writeStream = spark.table(outputView)
-  //         .writeStream
-  //         .outputMode("complete")
-  //         .queryName(tableName)
-  //         .format("memory")
-  //         .start
-
-  //       try {
-  //         // wait for query to start
-  //         val start = System.currentTimeMillis()
-  //         while (writeStream.lastProgress == null || (writeStream.lastProgress != null && writeStream.lastProgress.numInputRows == 0)) {
-  //           if (System.currentTimeMillis() > start + 180000) throw new Exception("Timeout without messages arriving")
-  //           println("Waiting for query progress...")
-  //           Thread.sleep(1000)
-  //         }
-
-  //         // while running perform PARALLEL insert/update/delete transactions
-  //         // this will block the main thread but we want to process all updates before triggering awaitTermination
-  //         var last = System.currentTimeMillis()
-  //         var i = 0
-  //         var deadlocks = 0
-  //         transactions.par.foreach { sql =>
-  //           if (System.currentTimeMillis() > last+1000) {
-  //             last = System.currentTimeMillis()
-  //             println(s"${i} transactions/sec")
-  //             i = 0
-  //           }
-  //           i += 1
-  //           try {
-  //             ai.tripl.arc.execute.JDBCExecuteStage.execute(
-  //               ai.tripl.arc.execute.JDBCExecuteStage(
-  //                 plugin=new ai.tripl.arc.execute.JDBCExecute,
-  //                 id=None,
-  //                 name="JDBCExecute",
-  //                 description=None,
-  //                 inputURI=new URI(mysqlURL),
-  //                 jdbcURL=mysqlURL,
-  //                 sql=sql,
-  //                 params=Map.empty,
-  //                 sqlParams=Map.empty
-  //               )
-  //             )
-  //           } catch {
-  //             // not nice but sometimes get deadlocks and we can just ignore them
-  //             case e: Exception if e.getMessage.contains("Deadlock") => deadlocks += 1
-  //           }
-  //         }
-
-  //         if (deadlocks > 10) throw new Exception(s"too many (${deadlocks}) transactions ignored due to database deadlock")
-  //         println(s"executed ${transactions.length} transactions against ${tableName} with ${update} updates, ${insert} inserts, ${delete} deletes")
-
-  //         writeStream.processAllAvailable
-  //         writeStream.stop
-
-  //         // validate results
-  //         val expected = extract.JDBCExtractStage.execute(
-  //           extract.JDBCExtractStage(
-  //             plugin=new extract.JDBCExtract,
-  //             id=None,
-  //             name="dataset",
-  //             description=None,
-  //             schema=Right(Nil),
-  //             outputView="expected",
-  //             jdbcURL=mysqlURL,
-  //             driver=DriverManager.getDriver(mysqlURL),
-  //             tableName=s"inventory.${tableName}",
-  //             numPartitions=None,
-  //             fetchsize=None,
-  //             partitionBy=Nil,
-  //             customSchema=None,
-  //             persist=true,
-  //             partitionColumn=None,
-  //             predicates=Nil,
-  //             params=Map.empty
-  //           )
-  //         ).get
-  //         assert(TestUtils.datasetEquality(expected, spark.table(tableName)))
-  //         println("PASS\n")
-
-  //       } catch {
-  //         case e: Exception => fail(e.getMessage)
-  //       } finally {
-  //         TestHelpers.deleteConnector(connectURI, connectorName)
-  //         TestHelpers.deleteConnector(connectURI, s"${connectorName}-dbhistory")
-  //         ai.tripl.arc.execute.JDBCExecuteStage.execute(
-  //           ai.tripl.arc.execute.JDBCExecuteStage(
-  //             plugin=new ai.tripl.arc.execute.JDBCExecute,
-  //             id=None,
-  //             name="JDBCExecute",
-  //             description=None,
-  //             inputURI=new URI(mysqlURL),
-  //             jdbcURL=mysqlURL,
-  //             sql=makeTransaction(Seq(s"DROP TABLE inventory.${tableName};")),
-  //             params=Map.empty,
-  //             sqlParams=Map.empty
-  //           )
-  //         )
-  //         writeStream.stop
-  //       }
-  //     }
-  //   }
-  // }
-
-  // test("MySQLDebeziumTransform: Types") {
-  //   implicit val spark = session
-  //   import spark.implicits._
-  //   implicit val logger = TestUtils.getLogger()
-  //   implicit val arcContext = TestUtils.getARCContext(isStreaming = true)
-
-  //   val knownData = TestUtils.getKnownDataset.drop("nullDatum")
-  //   val knownDataMetadata = MetadataUtils.createMetadataDataframe(knownData)
-  //   knownDataMetadata.persist
-  //   knownDataMetadata.createOrReplaceTempView(schema)
-
-  //   val tableName = s"customers_${UUID.randomUUID.toString.replaceAll("-","")}"
-
-  //   ai.tripl.arc.execute.JDBCExecuteStage.execute(
-  //     ai.tripl.arc.execute.JDBCExecuteStage(
-  //       plugin=new ai.tripl.arc.execute.JDBCExecute,
-  //       id=None,
-  //       name="JDBCExecute",
-  //       description=None,
-  //       inputURI=new URI(mysqlURL),
-  //       jdbcURL=mysqlURL,
-  //       sql=makeTransaction(Seq(s"CREATE TABLE ${tableName} (booleanDatum BOOLEAN NOT NULL, dateDatum DATE NOT NULL, decimalDatum DECIMAL(10,3) NOT NULL, doubleDatum DOUBLE NOT NULL, integerDatum INTEGER NOT NULL, longDatum BIGINT NOT NULL, stringDatum VARCHAR(255) NOT NULL, timeDatum VARCHAR(255) NOT NULL, timestampDatum TIMESTAMP NOT NULL);")),
-  //       params=Map.empty,
-  //       sqlParams=Map.empty
-  //     )
-  //   )
-
-  //   knownData.write.mode("append").jdbc(mysqlURL, s"inventory.${tableName}", new java.util.Properties)
-
-  //   TestHelpers.registerConnector(connectURI, makeConnectorConfig(s"inventory.${tableName}", "integerDatum"))
-
-  //   val readStream = spark
-  //     .readStream
-  //     .format("kafka")
-  //     .option("kafka.bootstrap.servers", "kafka:9092")
-  //     .option("subscribe", s"dbserver2.inventory.${tableName}")
-  //     .option("startingOffsets", "earliest")
-  //     .load
-  //   readStream.createOrReplaceTempView(inputView)
-
-  //   transform.DebeziumTransformStage.execute(
-  //     transform.DebeziumTransformStage(
-  //       plugin=new transform.DebeziumTransform,
-  //       id=None,
-  //       name="DebeziumTransform",
-  //       description=None,
-  //       inputView=inputView,
-  //       outputView=outputView,
-  //       schema=Left(schema),
-  //       strict=true,
-  //       initialStateView=None,
-  //       initialStateKey=None,
-  //       persist=false,
-  //       numPartitions=None,
-  //       partitionBy=List.empty,
-  //     )
-  //   )
-
-  //   val writeStream = spark.table(outputView)
-  //     .writeStream
-  //     .outputMode("complete")
-  //     .queryName(tableName)
-  //     .format("memory")
-  //     .start
-
-  //   try {
-  //     // wait for query to start
-  //     val start = System.currentTimeMillis()
-  //     while (writeStream.lastProgress == null || (writeStream.lastProgress != null && writeStream.lastProgress.numInputRows == 0)) {
-  //       if (System.currentTimeMillis() > start + 180000) throw new Exception("Timeout without messages arriving")
-  //       println("Waiting for query progress...")
-  //       Thread.sleep(1000)
-  //     }
-
-  //     writeStream.processAllAvailable
-  //     writeStream.stop
-
-  //     // validate results
-  //     assert(TestUtils.datasetEquality(knownData, spark.table(tableName)))
-  //   } catch {
-  //     case e: Exception => fail(e.getMessage)
-  //   } finally {
-  //     TestHelpers.deleteConnector(connectURI, connectorName)
-  //     TestHelpers.deleteConnector(connectURI, s"${connectorName}-dbhistory")
-  //     ai.tripl.arc.execute.JDBCExecuteStage.execute(
-  //       ai.tripl.arc.execute.JDBCExecuteStage(
-  //         plugin=new ai.tripl.arc.execute.JDBCExecute,
-  //         id=None,
-  //         name="JDBCExecute",
-  //         description=None,
-  //         inputURI=new URI(mysqlURL),
-  //         jdbcURL=mysqlURL,
-  //         sql=makeTransaction(Seq(s"DROP TABLE inventory.${tableName};")),
-  //         params=Map.empty,
-  //         sqlParams=Map.empty
-  //       )
-  //     )
-  //     writeStream.stop
-  //   }
-  // }
-
-  test("MySQLDebeziumTransform: Batch") {
+  test("MySQLDebeziumTransform: Streaming") {
     implicit val spark = session
     import spark.implicits._
     implicit val logger = TestUtils.getLogger()
     implicit val arcContext = TestUtils.getARCContext(isStreaming = true)
-    val size = 10
 
-    val (customerInitial, customerUpdates) = TestHelpers.getTestData(size)
+    val (customerInitial, customerUpdates) = TestHelpers.getTestData(50000)
     val customersMetadata = MetadataUtils.createMetadataDataframe(customerInitial.toDF)
     customersMetadata.persist
     customersMetadata.createOrReplaceTempView(schema)
 
     println()
     for (seed <- 0 to 0) {
-      for (strict <- Seq(true)) {
+      for (strict <- Seq(true, false)) {
         val tableName = s"customers_${UUID.randomUUID.toString.replaceAll("-","")}"
         println(s"mysql ${if (strict) "strict" else "not-strict"} seed: ${seed} target: ${tableName}")
 
@@ -494,39 +224,286 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         // make transactions
         val (transactions, update, insert, delete) = makeTransactions(customerInitial, customerUpdates, tableName, seed)
 
-        var last = System.currentTimeMillis()
-        var i = 0
-        var deadlocks = 0
-        transactions.par.foreach { sql =>
-          println(sql)
-          if (System.currentTimeMillis() > last+1000) {
-            last = System.currentTimeMillis()
-            println(s"${i} transactions/sec")
-            i = 0
-          }
-          i += 1
-          try {
-            ai.tripl.arc.execute.JDBCExecuteStage.execute(
-              ai.tripl.arc.execute.JDBCExecuteStage(
-                plugin=new ai.tripl.arc.execute.JDBCExecute,
-                id=None,
-                name="JDBCExecute",
-                description=None,
-                inputURI=new URI(mysqlURL),
-                jdbcURL=mysqlURL,
-                sql=sql,
-                params=Map.empty,
-                sqlParams=Map.empty
-              )
-            )
-          } catch {
-            // not nice but sometimes get deadlocks and we can just ignore them
-            case e: Exception if e.getMessage.contains("Deadlock") => deadlocks += 1
-          }
-        }
+        TestHelpers.registerConnector(connectURI, makeConnectorConfig(s"inventory.${tableName}", "c_custkey"))
 
-        if (deadlocks > 10) throw new Exception(s"too many (${deadlocks}) transactions ignored due to database deadlock")
-        println(s"executed ${transactions.length} transactions against ${tableName} with ${update} updates, ${insert} inserts, ${delete} deletes")
+        val readStream = spark
+          .readStream
+          .format("kafka")
+          .option("kafka.bootstrap.servers", "kafka:9092")
+          .option("subscribe", s"dbserver2.inventory.${tableName}")
+          .option("startingOffsets", "earliest")
+          .load
+        readStream.createOrReplaceTempView(inputView)
+
+        transform.DebeziumTransformStage.execute(
+          transform.DebeziumTransformStage(
+            plugin=new transform.DebeziumTransform,
+            id=None,
+            name="DebeziumTransform",
+            description=None,
+            inputView=inputView,
+            outputView=outputView,
+            schema=Left(schema),
+            strict=strict,
+            initialStateView=None,
+            initialStateKey=None,
+            persist=false,
+            numPartitions=None,
+            partitionBy=List.empty,
+          )
+        )
+
+        val writeStream = spark.table(outputView)
+          .writeStream
+          .outputMode("complete")
+          .queryName(tableName)
+          .format("memory")
+          .start
+
+        try {
+          // wait for query to start
+          val start = System.currentTimeMillis()
+          while (writeStream.lastProgress == null || (writeStream.lastProgress != null && writeStream.lastProgress.numInputRows == 0)) {
+            if (System.currentTimeMillis() > start + 180000) throw new Exception("Timeout without messages arriving")
+            println("Waiting for query progress...")
+            Thread.sleep(1000)
+          }
+
+          // while running perform PARALLEL insert/update/delete transactions
+          // this will block the main thread but we want to process all updates before triggering awaitTermination
+          var last = System.currentTimeMillis()
+          var i = 0
+          var deadlocks = 0
+          transactions.par.foreach { sql =>
+            if (System.currentTimeMillis() > last+1000) {
+              last = System.currentTimeMillis()
+              println(s"${i} transactions/sec")
+              i = 0
+            }
+            i += 1
+            try {
+              ai.tripl.arc.execute.JDBCExecuteStage.execute(
+                ai.tripl.arc.execute.JDBCExecuteStage(
+                  plugin=new ai.tripl.arc.execute.JDBCExecute,
+                  id=None,
+                  name="JDBCExecute",
+                  description=None,
+                  inputURI=new URI(mysqlURL),
+                  jdbcURL=mysqlURL,
+                  sql=sql,
+                  params=Map.empty,
+                  sqlParams=Map.empty
+                )
+              )
+            } catch {
+              // not nice but sometimes get deadlocks and we can just ignore them
+              case e: Exception if e.getMessage.contains("Deadlock") => deadlocks += 1
+            }
+          }
+
+          if (deadlocks > 10) throw new Exception(s"too many (${deadlocks}) transactions ignored due to database deadlock")
+          println(s"executed ${transactions.length} transactions against ${tableName} with ${update} updates, ${insert} inserts, ${delete} deletes")
+
+          writeStream.processAllAvailable
+          writeStream.stop
+
+          // validate results
+          val expected = extract.JDBCExtractStage.execute(
+            extract.JDBCExtractStage(
+              plugin=new extract.JDBCExtract,
+              id=None,
+              name="dataset",
+              description=None,
+              schema=Right(Nil),
+              outputView="expected",
+              jdbcURL=mysqlURL,
+              driver=DriverManager.getDriver(mysqlURL),
+              tableName=s"inventory.${tableName}",
+              numPartitions=None,
+              fetchsize=None,
+              partitionBy=Nil,
+              customSchema=None,
+              persist=true,
+              partitionColumn=None,
+              predicates=Nil,
+              params=Map.empty
+            )
+          ).get
+          assert(TestUtils.datasetEquality(expected, spark.table(tableName)))
+          println("PASS\n")
+
+        } catch {
+          case e: Exception => fail(e.getMessage)
+        } finally {
+          TestHelpers.deleteConnector(connectURI, connectorName)
+          TestHelpers.deleteConnector(connectURI, s"${connectorName}-dbhistory")
+          ai.tripl.arc.execute.JDBCExecuteStage.execute(
+            ai.tripl.arc.execute.JDBCExecuteStage(
+              plugin=new ai.tripl.arc.execute.JDBCExecute,
+              id=None,
+              name="JDBCExecute",
+              description=None,
+              inputURI=new URI(mysqlURL),
+              jdbcURL=mysqlURL,
+              sql=makeTransaction(Seq(s"DROP TABLE inventory.${tableName};")),
+              params=Map.empty,
+              sqlParams=Map.empty
+            )
+          )
+          writeStream.stop
+        }
+      }
+    }
+  }
+
+  test("MySQLDebeziumTransform: Types") {
+    implicit val spark = session
+    import spark.implicits._
+    implicit val logger = TestUtils.getLogger()
+    implicit val arcContext = TestUtils.getARCContext(isStreaming = true)
+
+    val knownData = TestUtils.getKnownDataset.drop("nullDatum")
+    val knownDataMetadata = MetadataUtils.createMetadataDataframe(knownData)
+    knownDataMetadata.persist
+    knownDataMetadata.createOrReplaceTempView(schema)
+
+    val tableName = s"customers_${UUID.randomUUID.toString.replaceAll("-","")}"
+
+    ai.tripl.arc.execute.JDBCExecuteStage.execute(
+      ai.tripl.arc.execute.JDBCExecuteStage(
+        plugin=new ai.tripl.arc.execute.JDBCExecute,
+        id=None,
+        name="JDBCExecute",
+        description=None,
+        inputURI=new URI(mysqlURL),
+        jdbcURL=mysqlURL,
+        sql=makeTransaction(Seq(s"CREATE TABLE ${tableName} (booleanDatum BOOLEAN NOT NULL, dateDatum DATE NOT NULL, decimalDatum DECIMAL(10,3) NOT NULL, doubleDatum DOUBLE NOT NULL, integerDatum INTEGER NOT NULL, longDatum BIGINT NOT NULL, stringDatum VARCHAR(255) NOT NULL, timeDatum VARCHAR(255) NOT NULL, timestampDatum TIMESTAMP NOT NULL);")),
+        params=Map.empty,
+        sqlParams=Map.empty
+      )
+    )
+
+    knownData.write.mode("append").jdbc(mysqlURL, s"inventory.${tableName}", new java.util.Properties)
+
+    TestHelpers.registerConnector(connectURI, makeConnectorConfig(s"inventory.${tableName}", "integerDatum"))
+
+    val readStream = spark
+      .readStream
+      .format("kafka")
+      .option("kafka.bootstrap.servers", "kafka:9092")
+      .option("subscribe", s"dbserver2.inventory.${tableName}")
+      .option("startingOffsets", "earliest")
+      .load
+    readStream.createOrReplaceTempView(inputView)
+
+    transform.DebeziumTransformStage.execute(
+      transform.DebeziumTransformStage(
+        plugin=new transform.DebeziumTransform,
+        id=None,
+        name="DebeziumTransform",
+        description=None,
+        inputView=inputView,
+        outputView=outputView,
+        schema=Left(schema),
+        strict=true,
+        initialStateView=None,
+        initialStateKey=None,
+        persist=false,
+        numPartitions=None,
+        partitionBy=List.empty,
+      )
+    )
+
+    val writeStream = spark.table(outputView)
+      .writeStream
+      .outputMode("complete")
+      .queryName(tableName)
+      .format("memory")
+      .start
+
+    try {
+      // wait for query to start
+      val start = System.currentTimeMillis()
+      while (writeStream.lastProgress == null || (writeStream.lastProgress != null && writeStream.lastProgress.numInputRows == 0)) {
+        if (System.currentTimeMillis() > start + 180000) throw new Exception("Timeout without messages arriving")
+        println("Waiting for query progress...")
+        Thread.sleep(1000)
+      }
+
+      writeStream.processAllAvailable
+      writeStream.stop
+
+      // validate results
+      assert(TestUtils.datasetEquality(knownData, spark.table(tableName)))
+    } catch {
+      case e: Exception => fail(e.getMessage)
+    } finally {
+      TestHelpers.deleteConnector(connectURI, connectorName)
+      TestHelpers.deleteConnector(connectURI, s"${connectorName}-dbhistory")
+      ai.tripl.arc.execute.JDBCExecuteStage.execute(
+        ai.tripl.arc.execute.JDBCExecuteStage(
+          plugin=new ai.tripl.arc.execute.JDBCExecute,
+          id=None,
+          name="JDBCExecute",
+          description=None,
+          inputURI=new URI(mysqlURL),
+          jdbcURL=mysqlURL,
+          sql=makeTransaction(Seq(s"DROP TABLE inventory.${tableName};")),
+          params=Map.empty,
+          sqlParams=Map.empty
+        )
+      )
+      writeStream.stop
+    }
+  }
+
+  test("MySQLDebeziumTransform: Batch") {
+    implicit val spark = session
+    import spark.implicits._
+    implicit val logger = TestUtils.getLogger()
+    implicit val arcContext = TestUtils.getARCContext(isStreaming = true)
+
+    val (customerInitial, customerUpdates) = TestHelpers.getTestData(50000)
+    val customersMetadata = MetadataUtils.createMetadataDataframe(customerInitial.toDF)
+    customersMetadata.persist
+    customersMetadata.createOrReplaceTempView(schema)
+
+    println()
+    for (seed <- 0 to 0) {
+      for (strict <- Seq(true)) {
+        val tableName = s"customers_${UUID.randomUUID.toString.replaceAll("-","")}"
+        println(s"mysql ${if (strict) "strict" else "not-strict"} seed: ${seed} target: ${tableName}")
+
+        ai.tripl.arc.execute.JDBCExecuteStage.execute(
+          ai.tripl.arc.execute.JDBCExecuteStage(
+            plugin=new ai.tripl.arc.execute.JDBCExecute,
+            id=None,
+            name="JDBCExecute",
+            description=None,
+            inputURI=new URI(mysqlURL),
+            jdbcURL=mysqlURL,
+            sql=makeTransaction(Seq(s"CREATE TABLE ${tableName} (c_custkey INTEGER NOT NULL, c_name VARCHAR(25) NOT NULL, c_address VARCHAR(40) NOT NULL, c_nationkey INTEGER NOT NULL, c_phone VARCHAR(15) NOT NULL, c_acctbal DECIMAL(20,2) NOT NULL, c_mktsegment VARCHAR(10) NOT NULL, c_comment VARCHAR(117) NOT NULL);")),
+            params=Map.empty,
+            sqlParams=Map.empty
+          )
+        )
+        customerInitial.write.mode("append").jdbc(mysqlURL, tableName, new java.util.Properties)
+        ai.tripl.arc.execute.JDBCExecuteStage.execute(
+          ai.tripl.arc.execute.JDBCExecuteStage(
+            plugin=new ai.tripl.arc.execute.JDBCExecute,
+            id=None,
+            name="JDBCExecute",
+            description=None,
+            inputURI=new URI(mysqlURL),
+            jdbcURL=mysqlURL,
+            sql=makeTransaction(Seq(s"ALTER TABLE ${tableName} ADD PRIMARY KEY (c_custkey);")),
+            params=Map.empty,
+            sqlParams=Map.empty
+          )
+        )
+
+        // make transactions
+        val (transactions, update, insert, delete) = makeTransactions(customerInitial, customerUpdates, tableName, seed)
 
         TestHelpers.registerConnector(connectURI, makeConnectorConfig(s"inventory.${tableName}", "c_custkey"))
 
@@ -555,6 +532,41 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             Thread.sleep(1000)
           }
 
+          // while running perform PARALLEL insert/update/delete transactions
+          // this will block the main thread but we want to process all updates before triggering awaitTermination
+          var last = System.currentTimeMillis()
+          var i = 0
+          var deadlocks = 0
+          transactions.par.foreach { sql =>
+            if (System.currentTimeMillis() > last+1000) {
+              last = System.currentTimeMillis()
+              println(s"${i} transactions/sec")
+              i = 0
+            }
+            i += 1
+            try {
+              ai.tripl.arc.execute.JDBCExecuteStage.execute(
+                ai.tripl.arc.execute.JDBCExecuteStage(
+                  plugin=new ai.tripl.arc.execute.JDBCExecute,
+                  id=None,
+                  name="JDBCExecute",
+                  description=None,
+                  inputURI=new URI(mysqlURL),
+                  jdbcURL=mysqlURL,
+                  sql=sql,
+                  params=Map.empty,
+                  sqlParams=Map.empty
+                )
+              )
+            } catch {
+              // not nice but sometimes get deadlocks and we can just ignore them
+              case e: Exception if e.getMessage.contains("Deadlock") => deadlocks += 1
+            }
+          }
+
+          if (deadlocks > 10) throw new Exception(s"too many (${deadlocks}) transactions ignored due to database deadlock")
+          println(s"executed ${transactions.length} transactions (${deadlocks} deadlocks) against ${tableName} with ${update} updates, ${insert} inserts, ${delete} deletes.")
+
           writeStream.processAllAvailable
           writeStream.stop
 
@@ -571,9 +583,14 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             .sortBy(row => row.offset)
             .toList
 
+          // make sure the updates have happened
+          assert(read.size > customerInitial.count)
+
           // recursively apply the records passing in the previous state
-          println(s"processing ${read.size} events in ${size/2} batches...")
-          read.grouped(size/2).zipWithIndex.foreach { case (batch, index) =>
+          val batches = 3
+          println(s"processing ${read.size} events in ${batches} ${read.size/batches} record batches...")
+          read.grouped(read.size/batches).zipWithIndex.foreach { case (batch, index) =>
+            val start = System.currentTimeMillis()
             batch.toDF.createOrReplaceTempView(inputView)
             transform.DebeziumTransformStage.execute(
               transform.DebeziumTransformStage(
@@ -592,10 +609,9 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
                 partitionBy=List.empty,
               )
             )
-
             val output = spark.table(outputView)
             output.createOrReplaceTempView(initialStateView)
-            println(s"processed batch ${index} of ${batch.length} records...")
+            println(s"processed batch ${index} of ${batch.length} records in ${System.currentTimeMillis()-start}ms... new total ${output.count}")
           }
 
           // validate results
@@ -621,7 +637,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             )
           ).get
           assert(TestUtils.datasetEquality(expected, spark.table(outputView)))
-          println("PASS\n")
+          println(s"PASS: expected: ${expected.count} actual: ${spark.table(outputView).count}\n")
 
         } catch {
           case e: Exception => fail(e.getMessage)

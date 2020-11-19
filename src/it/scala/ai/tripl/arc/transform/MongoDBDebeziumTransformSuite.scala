@@ -339,8 +339,11 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           writeStream.processAllAvailable
           writeStream.stop
 
+
           // validate results
           val expected = spark.read.format("com.mongodb.spark.sql").options(WriteConfig(Map("uri" -> mongoClientURI, "collection" -> tableName)).asOptions).load
+          expected.cache
+          assert(expected.count > customerInitial.count)
           assert(TestUtils.datasetEquality(expected, spark.table(tableName),10000))
           println("PASS\n")
 
