@@ -87,7 +87,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         println("Query terminated: " + queryTerminated.id)
       }
       override def onQueryProgress(queryProgress: QueryProgressEvent): Unit = {
-        println(s"numRowsTotal: ${if (queryProgress.progress.stateOperators.length != 0) queryProgress.progress.stateOperators(0).numRowsTotal else "unknown"} inputRowsPerSecond: ${queryProgress.progress.inputRowsPerSecond.round} processedRowsPerSecond: ${queryProgress.progress.processedRowsPerSecond.round}")
+        println(s"numRowsTotal: ${if (queryProgress.progress.stateOperators.length == 0) 0 else queryProgress.progress.stateOperators(0).numRowsTotal} inputRowsPerSecond: ${queryProgress.progress.inputRowsPerSecond.round} processedRowsPerSecond: ${queryProgress.progress.processedRowsPerSecond.round}")
       }
     })
 
@@ -241,7 +241,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     (transactions, updates, inserts, deletes)
   }
 
-  test("MongoDBDebeziumTransform") {
+  test("MongoDBDebeziumTransform: Streaming") {
     implicit val spark = session
     import spark.implicits._
     implicit val logger = TestUtils.getLogger()
@@ -283,7 +283,12 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             inputView=inputView,
             outputView=outputView,
             schema=Left(schema),
-            strict=strict
+            strict=strict,
+            initialStateView=None,
+            initialStateKey=None,
+            persist=false,
+            numPartitions=None,
+            partitionBy=List.empty,
           )
         )
 
@@ -330,15 +335,15 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             mongoSession.commitTransaction
             mongoSession.close
           }
-
+          println(s"executed ${transactions.length} transactions against ${tableName} with ${update} updates, ${insert} inserts, ${delete} deletes")
           writeStream.processAllAvailable
           writeStream.stop
 
           // validate results
           val expected = spark.read.format("com.mongodb.spark.sql").options(WriteConfig(Map("uri" -> mongoClientURI, "collection" -> tableName)).asOptions).load
           assert(TestUtils.datasetEquality(expected, spark.table(tableName),10000))
+          println("PASS\n")
 
-          println(s"executed ${transactions.length} transactions against ${tableName} with ${update} updates, ${insert} inserts, ${delete} deletes\n")
         } catch {
           case e: Exception => fail(e.getMessage)
         } finally {
@@ -386,7 +391,12 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         inputView=inputView,
         outputView=outputView,
         schema=Left(schema),
-        strict=true
+        strict=true,
+        initialStateView=None,
+        initialStateKey=None,
+        persist=false,
+        numPartitions=None,
+        partitionBy=List.empty,
       )
     )
 
