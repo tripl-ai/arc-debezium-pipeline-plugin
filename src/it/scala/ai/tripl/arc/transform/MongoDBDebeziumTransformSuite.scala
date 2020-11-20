@@ -39,7 +39,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
   val schema = "schema"
   val checkpointLocation = "/tmp/debezium"
   val serverName = "dbserver3"
-  val size = 50000
+  val size = 10000
 
   val database = "inventory"
   val mongoClientURI = s"mongodb://debezium:dbz@mongodb:27017/${database}?authSource=admin&replicaSet=rs0"

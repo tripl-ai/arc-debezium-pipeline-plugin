@@ -37,7 +37,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
   val schema = "schema"
   val checkpointLocation = "/tmp/debezium"
   val serverName = "dbserver1"
-  val size = 50000
+  val size = 10000
 
   val databaseURL = "jdbc:postgresql://postgres:5432/postgres?currentSchema=inventory&user=postgres&password=postgres"
   val connectURI = s"http://connect:8083/connectors/"
