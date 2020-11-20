@@ -204,7 +204,16 @@
         "name": "dbserver1.inventory.customers_b363690c31f84c12a24f51b761352359.Envelope"
     },
     "payload": {
-        "before": null,
+        "before": {
+            "c_custkey": 6,
+            "c_name": "Customer#000000008",
+            "c_address": "I0B10bB0AymmC, 0PrRYBCP1yGJ8xcBPmWhl5",
+            "c_nationkey": 17,
+            "c_phone": "27-147-574-9335",
+            "c_acctbal": "6819.74",
+            "c_mktsegment": "BUILDING",
+            "c_comment": "among the slyly regular theodolites kindle blithely courts. carefully even theodolites haggle slyly along the ide"
+        },
         "after": {
             "c_custkey": 6,
             "c_name": "Customer#000000008",
@@ -225,11 +234,11 @@
             "schema": "inventory",
             "table": "customers_b363690c31f84c12a24f51b761352359",
             "txId": 14454,
-            "lsn": 76232576,
+            "lsn": 76232848,
             "xmin": null
         },
-        "op": "c",
-        "ts_ms": 1605845098506,
+        "op": "u",
+        "ts_ms": 1605845098507,
         "transaction": null
     }
 }

@@ -37,6 +37,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
   val schema = "schema"
   val checkpointLocation = "/tmp/debezium"
   val serverName = "dbserver1"
+  val size = 50000
 
   val databaseURL = "jdbc:mysql://mysql:3306/inventory?user=root&password=debezium&allowMultiQueries=true"
   val connectURI = s"http://connect:8083/connectors/"
@@ -107,7 +108,8 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
   }
 
   def makeTransaction(statements: Seq[String]): String = {
-    s"""START TRANSACTION;
+    s"""SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+    |START TRANSACTION;
     |${statements.mkString("\n")}
     |COMMIT;
     """.stripMargin
@@ -197,7 +199,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     implicit val logger = TestUtils.getLogger()
     implicit val arcContext = TestUtils.getARCContext(isStreaming = true)
 
-    val (customerInitial, customerUpdates) = TestHelpers.getTestData(50000)
+    val (customerInitial, customerUpdates) = TestHelpers.getTestData(size)
     val customersMetadata = MetadataUtils.createMetadataDataframe(customerInitial.toDF)
     customersMetadata.persist
     customersMetadata.createOrReplaceTempView(schema)
@@ -279,14 +281,14 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           transactions.par.foreach { sql =>
             if (System.currentTimeMillis() > last+1000) {
               last = System.currentTimeMillis()
-              println(s"${i} transactions/sec")
+              println(s"${i} transactions/sec (${deadlocks} deadlocks)")
               i = 0
             }
             i += 1
             var retry = 0
             breakable {
               while(true){
-                if (retry == 10) {
+                if (retry == 100) {
                   throw new Exception("could not complete transaciton due to deadlocks")
                   break
                 }
@@ -306,10 +308,10 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
                   )
                   break
                 } catch {
-                  // not nice but sometimes get deadlocks and we can just ignore them
-                  case e: Exception if e.getMessage.contains("could not serialize access") => {
+                  case e: Exception if e.getMessage.contains("Deadlock found") => {
                     retry += 1
                     deadlocks += 1
+                    Thread.sleep(200)
                   }
                 }
               }
@@ -317,6 +319,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           }
           println(s"executed ${transactions.length} transactions (${deadlocks} deadlocks) against ${tableName} with ${update} updates, ${insert} inserts, ${delete} deletes.")
 
+          Thread.sleep(5000)
           writeStream.processAllAvailable
           writeStream.stop
 
@@ -443,6 +446,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         Thread.sleep(1000)
       }
 
+      Thread.sleep(5000)
       writeStream.processAllAvailable
       writeStream.stop
 
@@ -476,14 +480,14 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     implicit val logger = TestUtils.getLogger()
     implicit val arcContext = TestUtils.getARCContext(isStreaming = true)
 
-    val (customerInitial, customerUpdates) = TestHelpers.getTestData(50000)
+    val (customerInitial, customerUpdates) = TestHelpers.getTestData(size)
     val customersMetadata = MetadataUtils.createMetadataDataframe(customerInitial.toDF)
     customersMetadata.persist
     customersMetadata.createOrReplaceTempView(schema)
 
     println()
     for (seed <- 0 to 0) {
-      for (strict <- Seq(true)) {
+      for (strict <- Seq(true, false)) {
         val tableName = s"customers_${UUID.randomUUID.toString.replaceAll("-","")}"
         println(s"mysql ${if (strict) "strict" else "not-strict"} seed: ${seed} target: ${tableName}")
 
@@ -553,14 +557,14 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           transactions.par.foreach { sql =>
             if (System.currentTimeMillis() > last+1000) {
               last = System.currentTimeMillis()
-              println(s"${i} transactions/sec")
+              println(s"${i} transactions/sec (${deadlocks} deadlocks)")
               i = 0
             }
             i += 1
             var retry = 0
             breakable {
               while(true){
-                if (retry == 10) {
+                if (retry == 100) {
                   throw new Exception("could not complete transaciton due to deadlocks")
                   break
                 }
@@ -580,10 +584,10 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
                   )
                   break
                 } catch {
-                  // not nice but sometimes get deadlocks and we can just ignore them
-                  case e: Exception if e.getMessage.contains("could not serialize access") => {
+                  case e: Exception if e.getMessage.contains("Deadlock found") => {
                     retry += 1
                     deadlocks += 1
+                    Thread.sleep(200)
                   }
                 }
               }
@@ -591,6 +595,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           }
           println(s"executed ${transactions.length} transactions (${deadlocks} deadlocks) against ${tableName} with ${update} updates, ${insert} inserts, ${delete} deletes.")
 
+          Thread.sleep(5000)
           writeStream.processAllAvailable
           writeStream.stop
 

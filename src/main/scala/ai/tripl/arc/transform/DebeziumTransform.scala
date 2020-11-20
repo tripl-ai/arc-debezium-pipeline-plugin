@@ -248,8 +248,16 @@ object DebeziumTransformStage {
     // connector is required to override some of the default behavior for different connectors
     // placeholder allows mongodb connector to return rows which respect field nullable rules - the keyMask will ignore those placeholder values in merge
     def rowFromStringObjectMap(afterMap: Map[String,Object], connector: String, placeholders: Boolean): Row = {
+
+      // postgres does not support case sensitive column names
+      val fields = if (connector == CONNECTOR_POSTGRESQL) {
+        schema.fields.map { field => StructField(field.name.toLowerCase, field.dataType, field.nullable) }
+      } else {
+        schema.fields
+      }
+
       Row.fromSeq(
-        schema.fields.map { field =>
+        fields.map { field =>
           field.dataType match {
             case BooleanType => {
               afterMap.get(field.name) match {
@@ -392,13 +400,15 @@ object DebeziumTransformStage {
 
         partition.map { event =>
           if (event.key == null) throw new Exception("invalid configuration. expected 'key' to not be null. ensure primary key or connector 'message.key.columns' is set.")
-          val keyMap = objectMapper.readValue(new String(event.key, StandardCharsets.UTF_8), classOf[Map[String,Map[String,String]]])
+          val keyString = new String(event.key, StandardCharsets.UTF_8)
+          val keyMap = objectMapper.readValue(keyString, classOf[Map[String,Map[String,String]]])
 
           if (!keyMap.contains("payload")) throw new Exception(s"invalid message format. missing 'key.payload' attribute. got ${keyMap.keys.mkString("["," ,","]")}")
           val keyPayload = keyMap.get("payload").getOrElse(throw new Exception("invalid message format. expected 'key.payload' to be Object."))
           val key = keyPayload.values.mkString("|")
 
-          val valueMap = objectMapper.readValue(new String(event.value, StandardCharsets.UTF_8), classOf[Map[String,Map[String,Object]]])
+          val valueString = new String(event.value, StandardCharsets.UTF_8)
+          val valueMap = objectMapper.readValue(valueString, classOf[Map[String,Map[String,Object]]])
 
           if (!valueMap.contains("payload")) throw new Exception(s"invalid message format. missing 'value.payload' attribute. got ${valueMap.keys.mkString("["," ,","]")}")
           val valuePayload = valueMap.get("payload").getOrElse(throw new Exception("invalid message format. expected 'value.payload' to be Object."))

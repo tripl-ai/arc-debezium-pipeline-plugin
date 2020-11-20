@@ -37,6 +37,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
   val schema = "schema"
   val checkpointLocation = "/tmp/debezium"
   val serverName = "dbserver1"
+  val size = 50000
 
   val databaseURL = "jdbc:postgresql://postgres:5432/postgres?currentSchema=inventory&user=postgres&password=postgres"
   val connectURI = s"http://connect:8083/connectors/"
@@ -200,7 +201,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     implicit val logger = TestUtils.getLogger()
     implicit val arcContext = TestUtils.getARCContext(isStreaming = true)
 
-    val (customerInitial, customerUpdates) = TestHelpers.getTestData(50000)
+    val (customerInitial, customerUpdates) = TestHelpers.getTestData(size)
     val customersMetadata = MetadataUtils.createMetadataDataframe(customerInitial.toDF)
     customersMetadata.persist
     customersMetadata.createOrReplaceTempView(schema)
@@ -219,7 +220,12 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             description=None,
             inputURI=new URI(databaseURL),
             jdbcURL=databaseURL,
-            sql=makeTransaction(Seq(s"CREATE TABLE ${tableName} (c_custkey INTEGER PRIMARY KEY NOT NULL, c_name VARCHAR(25) NOT NULL, c_address VARCHAR(40) NOT NULL, c_nationkey INTEGER NOT NULL, c_phone VARCHAR(15) NOT NULL, c_acctbal DECIMAL(20,2) NOT NULL, c_mktsegment VARCHAR(10) NOT NULL, c_comment VARCHAR(117) NOT NULL);")),
+            sql=makeTransaction(
+              Seq(
+                s"CREATE TABLE ${tableName} (c_custkey INTEGER NOT NULL, c_name VARCHAR(25) NOT NULL, c_address VARCHAR(40) NOT NULL, c_nationkey INTEGER NOT NULL, c_phone VARCHAR(15) NOT NULL, c_acctbal DECIMAL(20,2) NOT NULL, c_mktsegment VARCHAR(10) NOT NULL, c_comment VARCHAR(117) NOT NULL);",
+                s"ALTER TABLE ${tableName} REPLICA IDENTITY FULL;"
+              )
+            ),
             params=Map.empty,
             sqlParams=Map.empty
           )
@@ -274,25 +280,20 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             Thread.sleep(1000)
           }
 
-          // while running perform PARALLEL insert/update/delete transactions
+          // while running perform SERIAL insert/update/delete transactions
           // this will block the main thread but we want to process all updates before triggering awaitTermination
           var last = System.currentTimeMillis()
           var i = 0
           var deadlocks = 0
-          transactions.par.foreach { sql =>
+          transactions.foreach { sql =>
             if (System.currentTimeMillis() > last+1000) {
               last = System.currentTimeMillis()
-              println(s"${i} transactions/sec")
+              println(s"${i} transactions/sec (${deadlocks} deadlocks)")
               i = 0
             }
             i += 1
-            var retry = 0
             breakable {
               while(true){
-                if (retry == 10) {
-                  throw new Exception("could not complete transaciton due to deadlocks")
-                  break
-                }
                 try {
                   ai.tripl.arc.execute.JDBCExecuteStage.execute(
                     ai.tripl.arc.execute.JDBCExecuteStage(
@@ -309,10 +310,9 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
                   )
                   break
                 } catch {
-                  // not nice but sometimes get deadlocks and we can just ignore them
                   case e: Exception if e.getMessage.contains("could not serialize access") => {
-                    retry += 1
                     deadlocks += 1
+                    Thread.sleep(200)
                   }
                 }
               }
@@ -320,6 +320,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           }
           println(s"executed ${transactions.length} transactions (${deadlocks} deadlocks) against ${tableName} with ${update} updates, ${insert} inserts, ${delete} deletes.")
 
+          Thread.sleep(5000)
           writeStream.processAllAvailable
           writeStream.stop
 
@@ -394,7 +395,12 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         description=None,
         inputURI=new URI(databaseURL),
         jdbcURL=databaseURL,
-        sql=makeTransaction(Seq(s"CREATE TABLE ${tableName} (booleanDatum BOOLEAN NOT NULL, dateDatum DATE NOT NULL, decimalDatum DECIMAL(10,3) NOT NULL, doubleDatum DOUBLE PRECISION NOT NULL, integerDatum INTEGER NOT NULL, longDatum BIGINT NOT NULL, stringDatum VARCHAR(255) NOT NULL, timeDatum VARCHAR(255) NOT NULL, timestampDatum TIMESTAMP NOT NULL);")),
+        sql=makeTransaction(
+          Seq(
+            s"CREATE TABLE ${tableName} (booleanDatum BOOLEAN NOT NULL, dateDatum DATE NOT NULL, decimalDatum DECIMAL(10,3) NOT NULL, doubleDatum DOUBLE PRECISION NOT NULL, integerDatum INTEGER NOT NULL, longDatum BIGINT NOT NULL, stringDatum VARCHAR(255) NOT NULL, timeDatum VARCHAR(255) NOT NULL, timestampDatum TIMESTAMP NOT NULL);",
+            s"ALTER TABLE ${tableName} REPLICA IDENTITY FULL;"
+          )
+        ),
         params=Map.empty,
         sqlParams=Map.empty
       )
@@ -447,6 +453,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         Thread.sleep(1000)
       }
 
+      Thread.sleep(5000)
       writeStream.processAllAvailable
       writeStream.stop
 
@@ -479,14 +486,14 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     implicit val logger = TestUtils.getLogger()
     implicit val arcContext = TestUtils.getARCContext(isStreaming = true)
 
-    val (customerInitial, customerUpdates) = TestHelpers.getTestData(50000)
+    val (customerInitial, customerUpdates) = TestHelpers.getTestData(size)
     val customersMetadata = MetadataUtils.createMetadataDataframe(customerInitial.toDF)
     customersMetadata.persist
     customersMetadata.createOrReplaceTempView(schema)
 
     println()
     for (seed <- 0 to 0) {
-      for (strict <- Seq(true)) {
+      for (strict <- Seq(true, false)) {
         val tableName = s"customers_${UUID.randomUUID.toString.replaceAll("-","")}"
         println(s"postgres ${if (strict) "strict" else "not-strict"} seed: ${seed} target: ${tableName}")
 
@@ -553,25 +560,20 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             Thread.sleep(1000)
           }
 
-          // while running perform PARALLEL insert/update/delete transactions
+          // while running perform SERIAL insert/update/delete transactions
           // this will block the main thread but we want to process all updates before triggering awaitTermination
           var last = System.currentTimeMillis()
           var i = 0
           var deadlocks = 0
-          transactions.par.foreach { sql =>
+          transactions.foreach { sql =>
             if (System.currentTimeMillis() > last+1000) {
               last = System.currentTimeMillis()
-              println(s"${i} transactions/sec")
+              println(s"${i} transactions/sec (${deadlocks} deadlocks)")
               i = 0
             }
             i += 1
-            var retry = 0
             breakable {
               while(true){
-                if (retry == 10) {
-                  throw new Exception("could not complete transaciton due to deadlocks")
-                  break
-                }
                 try {
                   ai.tripl.arc.execute.JDBCExecuteStage.execute(
                     ai.tripl.arc.execute.JDBCExecuteStage(
@@ -588,10 +590,9 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
                   )
                   break
                 } catch {
-                  // not nice but sometimes get deadlocks and we can just ignore them
                   case e: Exception if e.getMessage.contains("could not serialize access") => {
-                    retry += 1
                     deadlocks += 1
+                    Thread.sleep(100)
                   }
                 }
               }
@@ -599,6 +600,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           }
           println(s"executed ${transactions.length} transactions (${deadlocks} deadlocks) against ${tableName} with ${update} updates, ${insert} inserts, ${delete} deletes.")
 
+          Thread.sleep(5000)
           writeStream.processAllAvailable
           writeStream.stop
 

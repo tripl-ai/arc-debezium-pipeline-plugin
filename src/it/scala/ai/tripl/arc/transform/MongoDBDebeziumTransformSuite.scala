@@ -39,6 +39,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
   val schema = "schema"
   val checkpointLocation = "/tmp/debezium"
   val serverName = "dbserver3"
+  val size = 50000
 
   val database = "inventory"
   val mongoClientURI = s"mongodb://debezium:dbz@mongodb:27017/${database}?authSource=admin&replicaSet=rs0"
@@ -65,7 +66,9 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
                   .master("local[*]")
                   .config("spark.ui.port", "4040")
                   .config("spark.checkpoint.compress", "true")
+                  .config("spark.sql.shuffle.partitions", 4)
                   .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+                  .config("spark.kryoserializer.buffer.max", "2047m")
                   .config("spark.sql.streaming.checkpointLocation", checkpointLocation)
                   .config("spark.sql.streaming.forceDeleteTempCheckpointLocation", "true")
                   .appName("Arc Test")
@@ -248,7 +251,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     implicit val logger = TestUtils.getLogger()
     implicit val arcContext = TestUtils.getARCContext(isStreaming = true)
 
-    val (customerInitial, customerUpdates) = TestHelpers.getTestData(50000)
+    val (customerInitial, customerUpdates) = TestHelpers.getTestData(size)
     val customersMetadata = MetadataUtils.createMetadataDataframe(customerInitial.toDF.withColumnRenamed("c_custkey", "_id"))
     customersMetadata.persist
     customersMetadata.createOrReplaceTempView(schema)
@@ -337,15 +340,16 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             mongoSession.close
           }
           println(s"executed ${transactions.length} transactions against ${tableName} with ${update} updates, ${insert} inserts, ${delete} deletes")
+
+          Thread.sleep(5000)
           writeStream.processAllAvailable
           writeStream.stop
-
 
           // validate results
           val expected = spark.read.format("com.mongodb.spark.sql").options(WriteConfig(Map("uri" -> mongoClientURI, "collection" -> tableName)).asOptions).load
           expected.cache
           assert(expected.count > customerInitial.count)
-          assert(TestUtils.datasetEquality(expected, spark.table(tableName),10000))
+          assert(TestUtils.datasetEquality(expected, spark.table(tableName)))
           println("PASS\n")
 
         } catch {

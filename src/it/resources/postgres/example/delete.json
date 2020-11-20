@@ -47,7 +47,7 @@
                     }
                 ],
                 "optional": true,
-                "name": "dbserver1.inventory.customers_76c5dbd01ad44a229fc6ba46d5bb744b.Value",
+                "name": "dbserver1.inventory.customers_b363690c31f84c12a24f51b761352359.Value",
                 "field": "before"
             },
             {
@@ -95,7 +95,7 @@
                     }
                 ],
                 "optional": true,
-                "name": "dbserver1.inventory.customers_76c5dbd01ad44a229fc6ba46d5bb744b.Value",
+                "name": "dbserver1.inventory.customers_b363690c31f84c12a24f51b761352359.Value",
                 "field": "after"
             },
             {
@@ -201,35 +201,35 @@
             }
         ],
         "optional": false,
-        "name": "dbserver1.inventory.customers_76c5dbd01ad44a229fc6ba46d5bb744b.Envelope"
+        "name": "dbserver1.inventory.customers_b363690c31f84c12a24f51b761352359.Envelope"
     },
     "payload": {
         "before": {
             "c_custkey": 6,
-            "c_name": "",
-            "c_address": "",
-            "c_nationkey": 0,
-            "c_phone": "",
-            "c_acctbal": "0.00",
-            "c_mktsegment": "",
-            "c_comment": ""
+            "c_name": "Customer#000000006",
+            "c_address": "sKZz0CsnMD7mp4Xd0YrBvx,LREYKUWAh yVn",
+            "c_nationkey": 20,
+            "c_phone": "30-114-968-4951",
+            "c_acctbal": "7638.57",
+            "c_mktsegment": "AUTOMOBILE",
+            "c_comment": "tions. even deposits boost according to the slyly bold packages. final accounts cajole requests. furious"
         },
         "after": null,
         "source": {
             "version": "1.3.0.Final",
             "connector": "postgresql",
             "name": "dbserver1",
-            "ts_ms": 1605764204847,
+            "ts_ms": 1605845098365,
             "snapshot": "false",
             "db": "postgres",
             "schema": "inventory",
-            "table": "customers_76c5dbd01ad44a229fc6ba46d5bb744b",
-            "txId": 3043,
-            "lsn": 33011512,
+            "table": "customers_b363690c31f84c12a24f51b761352359",
+            "txId": 14454,
+            "lsn": 76232312,
             "xmin": null
         },
         "op": "d",
-        "ts_ms": 1605764207988,
+        "ts_ms": 1605845098506,
         "transaction": null
     }
 }
