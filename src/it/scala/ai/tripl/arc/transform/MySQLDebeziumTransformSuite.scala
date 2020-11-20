@@ -37,7 +37,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
   val schema = "schema"
   val checkpointLocation = "/tmp/debezium"
   val serverName = "dbserver1"
-  val size = 10000
+  val size = 5000
 
   val databaseURL = "jdbc:mysql://mysql:3306/inventory?user=root&password=debezium&allowMultiQueries=true"
   val connectURI = s"http://connect:8083/connectors/"
