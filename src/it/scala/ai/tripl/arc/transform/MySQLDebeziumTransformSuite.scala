@@ -273,12 +273,12 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             Thread.sleep(1000)
           }
 
-          // while running perform PARALLEL insert/update/delete transactions
+          // while running perform SERIAL insert/update/delete transactions
           // this will block the main thread but we want to process all updates before triggering awaitTermination
           var last = System.currentTimeMillis()
           var i = 0
           var deadlocks = 0
-          transactions.par.foreach { sql =>
+          transactions.foreach { sql =>
             if (System.currentTimeMillis() > last+1000) {
               last = System.currentTimeMillis()
               println(s"${i} transactions/sec (${deadlocks} deadlocks)")
@@ -549,12 +549,12 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             Thread.sleep(1000)
           }
 
-          // while running perform PARALLEL insert/update/delete transactions
+          // while running perform SERIAL insert/update/delete transactions
           // this will block the main thread but we want to process all updates before triggering awaitTermination
           var last = System.currentTimeMillis()
           var i = 0
           var deadlocks = 0
-          transactions.par.foreach { sql =>
+          transactions.foreach { sql =>
             if (System.currentTimeMillis() > last+1000) {
               last = System.currentTimeMillis()
               println(s"${i} transactions/sec (${deadlocks} deadlocks)")
