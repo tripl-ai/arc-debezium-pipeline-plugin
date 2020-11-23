@@ -53,7 +53,7 @@ class DebeziumTransform extends PipelineStagePlugin with JupyterCompleter {
     import ai.tripl.arc.config.ConfigUtils._
     implicit val c = config
 
-    val expectedKeys = "type" :: "id" :: "name" :: "description" :: "environments" :: "inputView" :: "outputView" :: "authentication" :: "schema" :: "schemaURI" :: "schemaView" :: "strict" :: Nil
+    val expectedKeys = "type" :: "id" :: "name" :: "description" :: "environments" :: "inputView" :: "outputView" :: "authentication" :: "schema" :: "schemaURI" :: "schemaView" :: "strict" :: "initialStateView" :: "initialStateKey" :: "persist" :: "numPartitions" :: "partitionBy" :: Nil
     val id = getOptionalValue[String]("id")
     val name = getValue[String]("name")
     val description = getOptionalValue[String]("description")
@@ -71,11 +71,15 @@ class DebeziumTransform extends PipelineStagePlugin with JupyterCompleter {
     } else {
       (Right(List.empty), Right(List.empty), Right(""))
     }
-
+    val initialStateView = getOptionalValue[String]("initialStateView")
+    val initialStateKey = if (c.hasPath("initialStateView")) getValue[String]("initialStateKey") else Right("")
+    val persist = getValue[java.lang.Boolean]("persist", default = Some(false))
+    val numPartitions = getOptionalValue[Int]("numPartitions")
+    val partitionBy = getValue[StringList]("partitionBy", default = Some(Nil))
     val invalidKeys = checkValidKeys(c)(expectedKeys)
 
-    (id, name, description, inputView, outputView, schema, schemaURI, schemaView, authentication, strict, invalidKeys) match {
-      case (Right(id), Right(name), Right(description), Right(inputView), Right(outputView), Right(schema), Right(schemaURI), Right(schemaView), Right(authentication), Right(strict), Right(invalidKeys)) =>
+    (id, name, description, inputView, outputView, schema, schemaURI, schemaView, authentication, strict, initialStateView, initialStateKey, persist, numPartitions, partitionBy, invalidKeys) match {
+      case (Right(id), Right(name), Right(description), Right(inputView), Right(outputView), Right(schema), Right(schemaURI), Right(schemaView), Right(authentication), Right(strict), Right(initialStateView), Right(initialStateKey), Right(persist), Right(numPartitions), Right(partitionBy), Right(invalidKeys)) =>
         val _schema = if (c.hasPath("schemaView")) {
           Left(schemaView)
         } else if (c.hasPath("schemaURI")) {
@@ -83,6 +87,7 @@ class DebeziumTransform extends PipelineStagePlugin with JupyterCompleter {
         } else {
           Right(schema)
         }
+        val _initialStateKey = if (c.hasPath("initialStateView")) Option(initialStateKey) else None
 
         val stage = DebeziumTransformStage(
           plugin=this,
@@ -93,6 +98,11 @@ class DebeziumTransform extends PipelineStagePlugin with JupyterCompleter {
           outputView=outputView,
           schema=_schema,
           strict=strict,
+          initialStateView=initialStateView,
+          initialStateKey=_initialStateKey,
+          persist=persist,
+          numPartitions=numPartitions,
+          partitionBy=partitionBy,
         )
 
         if (c.hasPath("schemaView")) {
@@ -103,10 +113,13 @@ class DebeziumTransform extends PipelineStagePlugin with JupyterCompleter {
         authentication.foreach { authentication => stage.stageDetail.put("authentication", authentication.method) }
         stage.stageDetail.put("inputView", inputView)
         stage.stageDetail.put("outputView", outputView)
+        initialStateView.foreach { stage.stageDetail.put("initialStateView", _) }
+        _initialStateKey.foreach { stage.stageDetail.put("initialStateKey", _) }
+        stage.stageDetail.put("persist", java.lang.Boolean.valueOf(persist))
 
         Right(stage)
       case _ =>
-        val allErrors: Errors = List(id, name, description, inputView, outputView, schema, schemaURI, schemaView, authentication, strict, invalidKeys).collect{ case Left(errs) => errs }.flatten
+        val allErrors: Errors = List(id, name, description, inputView, outputView, schema, schemaURI, schemaView, authentication, strict, initialStateView, initialStateKey, persist, numPartitions, partitionBy, invalidKeys).collect{ case Left(errs) => errs }.flatten
         val stageName = stringOrDefault(name, "unnamed stage")
         val err = StageError(index, stageName, c.origin.lineNumber, allErrors)
         Left(err :: Nil)
@@ -123,6 +136,11 @@ case class DebeziumTransformStage(
     outputView: String,
     schema: Either[String, List[ExtractColumn]],
     strict: Boolean,
+    initialStateView: Option[String],
+    initialStateKey: Option[String],
+    persist: Boolean,
+    numPartitions: Option[Int],
+    partitionBy: List[String],
   ) extends TransformPipelineStage {
 
   override def execute()(implicit spark: SparkSession, logger: ai.tripl.arc.util.log.logger.Logger, arcContext: ARCContext): Option[DataFrame] = {
@@ -149,6 +167,7 @@ object DebeziumTransformStage {
   val OPERATION_UPDATE = "u"
   val OPERATION_DELETE = "d"
 
+  val CONNECTOR_STATE = "state"
   val CONNECTOR_MYSQL = "mysql"
   val CONNECTOR_MONGODB = "mongodb"
   val CONNECTOR_POSTGRESQL = "postgresql"
@@ -179,17 +198,6 @@ object DebeziumTransformStage {
 
     val df = spark.table(stage.inputView)
 
-    if (!arcContext.isStreaming) {
-      throw new Exception("DebeziumTransform can only be executed in streaming mode.") with DetailException {
-        override val detail = stage.stageDetail
-      }
-    }
-    if (!df.isStreaming) {
-      throw new Exception("DebeziumTransform can only be executed against streaming sources.") with DetailException {
-        override val detail = stage.stageDetail
-      }
-    }
-
     val cols = stage.schema match {
       case Right(cols) => {
         cols match {
@@ -214,7 +222,7 @@ object DebeziumTransformStage {
     val schema = Extract.toStructType(cols)
     val eventSchema = StructType(
       Seq(
-        StructField("key", BinaryType, true),
+        StructField("key", StringType, true),
         StructField("offset", LongType, true),
         StructField("connector", StringType, true),
         StructField("operation", StringType, true),
@@ -225,7 +233,7 @@ object DebeziumTransformStage {
     )
     val eventsSchema = StructType(
       Seq(
-        StructField("key", BinaryType, true),
+        StructField("key", StringType, true),
         StructField("exists", BooleanType, true),
         StructField("events", ArrayType(eventSchema, true), true),
       )
@@ -240,8 +248,16 @@ object DebeziumTransformStage {
     // connector is required to override some of the default behavior for different connectors
     // placeholder allows mongodb connector to return rows which respect field nullable rules - the keyMask will ignore those placeholder values in merge
     def rowFromStringObjectMap(afterMap: Map[String,Object], connector: String, placeholders: Boolean): Row = {
+
+      // postgres does not support case sensitive column names
+      val fields = if (connector == CONNECTOR_POSTGRESQL) {
+        schema.fields.map { field => StructField(field.name.toLowerCase, field.dataType, field.nullable) }
+      } else {
+        schema.fields
+      }
+
       Row.fromSeq(
-        schema.fields.map { field =>
+        fields.map { field =>
           field.dataType match {
             case BooleanType => {
               afterMap.get(field.name) match {
@@ -370,7 +386,7 @@ object DebeziumTransformStage {
       Row.fromSeq(events.last.toSeq.updated(EVENT_AFTER_INDEX, patched))
     }
 
-    // todo: support avro
+    // map the events to change rows
     val debeziumEvents = df
       .as[DebeziumStringKafkaEvent]
       // remove debezium tombstone events
@@ -384,18 +400,26 @@ object DebeziumTransformStage {
 
         partition.map { event =>
           if (event.key == null) throw new Exception("invalid configuration. expected 'key' to not be null. ensure primary key or connector 'message.key.columns' is set.")
+          val keyString = new String(event.key, StandardCharsets.UTF_8)
+          val keyMap = objectMapper.readValue(keyString, classOf[Map[String,Map[String,String]]])
 
-          val valueMap = objectMapper.readValue(new String(event.value, StandardCharsets.UTF_8), classOf[Map[String,Map[String,Object]]])
+          if (!keyMap.contains("payload")) throw new Exception(s"invalid message format. missing 'key.payload' attribute. got ${keyMap.keys.mkString("["," ,","]")}")
+          val keyPayload = keyMap.get("payload").getOrElse(throw new Exception("invalid message format. expected 'key.payload' to be Object."))
+          // this currently only supports 1:1 mapping of key when used with initialStateKey
+          val key = keyPayload.values.mkString("|")
+
+          val valueString = new String(event.value, StandardCharsets.UTF_8)
+          val valueMap = objectMapper.readValue(valueString, classOf[Map[String,Map[String,Object]]])
 
           if (!valueMap.contains("payload")) throw new Exception(s"invalid message format. missing 'value.payload' attribute. got ${valueMap.keys.mkString("["," ,","]")}")
-          val payload = valueMap.get("payload").getOrElse(throw new Exception("invalid message format. expected 'value.payload' to be Object."))
+          val valuePayload = valueMap.get("payload").getOrElse(throw new Exception("invalid message format. expected 'value.payload' to be Object."))
 
-          if (!payload.contains("op")) throw new Exception(s"invalid message format. missing 'value.payload.op' attribute. got ${payload.keys.mkString("["," ,","]")}")
-          val operation = Try(payload.get("op").get.asInstanceOf[String]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.op' to be String."))
+          if (!valuePayload.contains("op")) throw new Exception(s"invalid message format. missing 'value.payload.op' attribute. got ${valuePayload.keys.mkString("["," ,","]")}")
+          val operation = Try(valuePayload.get("op").get.asInstanceOf[String]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.op' to be String."))
 
           val connector = memoizedConnector.getOrElse {
-            if (!payload.contains("source")) throw new Exception(s"invalid message format. missing 'value.payload.source' attribute. got ${payload.keys.mkString("["," ,","]")}")
-            val source = Try(payload.get("source").get.asInstanceOf[Map[String,Object]]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.source' to be Object."))
+            if (!valuePayload.contains("source")) throw new Exception(s"invalid message format. missing 'value.payload.source' attribute. got ${valuePayload.keys.mkString("["," ,","]")}")
+            val source = Try(valuePayload.get("source").get.asInstanceOf[Map[String,Object]]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.source' to be Object."))
 
             if (!source.contains("connector")) throw new Exception(s"invalid message format. missing 'value.payload.source.connector' attribute. got ${source.keys.mkString("["," ,","]")}")
             val connector = Try(source.get("connector").get.asInstanceOf[String]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.source.connector' to be String."))
@@ -409,18 +433,18 @@ object DebeziumTransformStage {
           val (before, after, keyMask) = connector match {
             case CONNECTOR_MYSQL | CONNECTOR_POSTGRESQL => {
               val before = if (stage.strict) {
-                if (!payload.contains("before")) throw new Exception(s"invalid message format. missing 'value.payload.before' attribute. got ${payload.keys.mkString("["," ,","]")}")
+                if (!valuePayload.contains("before")) throw new Exception(s"invalid message format. missing 'value.payload.before' attribute. got ${valuePayload.keys.mkString("["," ,","]")}")
                 operation match {
-                  case OPERATION_CREATE | OPERATION_READ => Try(payload.get("before").get.asInstanceOf[scala.Null]).getOrElse(throw new Exception(s"invalid message format. expected 'value.payload.before' to be null for operation '${OPERATION_CREATE}'."))
-                  case OPERATION_UPDATE | OPERATION_DELETE => rowFromStringObjectMap(Try(payload.get("before").get.asInstanceOf[Map[String,Object]]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.before' to be Object.")), connector, false)
+                  case OPERATION_CREATE | OPERATION_READ => Try(valuePayload.get("before").get.asInstanceOf[scala.Null]).getOrElse(throw new Exception(s"invalid message format. expected 'value.payload.before' to be null for operation '${OPERATION_CREATE}'."))
+                  case OPERATION_UPDATE | OPERATION_DELETE => rowFromStringObjectMap(Try(valuePayload.get("before").get.asInstanceOf[Map[String,Object]]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.before' to be Object.")), connector, false)
                 }
               } else {
                 null
               }
-              if (!payload.contains("after")) throw new Exception(s"invalid message format. missing 'value.payload.after' attribute. got ${payload.keys.mkString("["," ,","]")}")
+              if (!valuePayload.contains("after")) throw new Exception(s"invalid message format. missing 'value.payload.after' attribute. got ${valuePayload.keys.mkString("["," ,","]")}")
               val after = operation match {
-                case OPERATION_CREATE | OPERATION_READ | OPERATION_UPDATE => rowFromStringObjectMap(Try(payload.get("after").get.asInstanceOf[Map[String,Object]]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.after' to be Object.")), connector, false)
-                case OPERATION_DELETE => Try(payload.get("after").get.asInstanceOf[scala.Null]).getOrElse(throw new Exception(s"invalid message format. expected 'value.payload.after' to be null for operation '${OPERATION_DELETE}'."))
+                case OPERATION_CREATE | OPERATION_READ | OPERATION_UPDATE => rowFromStringObjectMap(Try(valuePayload.get("after").get.asInstanceOf[Map[String,Object]]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.after' to be Object.")), connector, false)
+                case OPERATION_DELETE => Try(valuePayload.get("after").get.asInstanceOf[scala.Null]).getOrElse(throw new Exception(s"invalid message format. expected 'value.payload.after' to be null for operation '${OPERATION_DELETE}'."))
               }
               (before, after, null)
             }
@@ -428,15 +452,15 @@ object DebeziumTransformStage {
               val before = null
               val keyMask = scala.collection.mutable.Set[String]()
 
-              if (!payload.contains("after")) throw new Exception(s"invalid message format. missing 'value.payload.after' attribute. got ${payload.keys.mkString("["," ,","]")}")
+              if (!valuePayload.contains("after")) throw new Exception(s"invalid message format. missing 'value.payload.after' attribute. got ${valuePayload.keys.mkString("["," ,","]")}")
               val after = operation match {
                 case OPERATION_CREATE | OPERATION_READ => {
-                  val after = Try(payload.get("after").get.asInstanceOf[String]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.after' to be String."))
+                  val after = Try(valuePayload.get("after").get.asInstanceOf[String]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.after' to be String."))
                   val createDocument = BsonDocument.parse(StringEscapeUtils.unescapeJson(after))
                   rowFromStringObjectMap(objectMapper.readValue(createDocument.toJson, classOf[Map[String,Object]]), connector, false)
                 }
                 case OPERATION_UPDATE => {
-                  val patch = Try(payload.get("patch").get.asInstanceOf[String]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.patch' to be String."))
+                  val patch = Try(valuePayload.get("patch").get.asInstanceOf[String]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.patch' to be String."))
                   val patchDocument = BsonDocument.parse(StringEscapeUtils.unescapeJson(patch))
 
                   var updateDocument = new BsonDocument()
@@ -461,19 +485,14 @@ object DebeziumTransformStage {
                   }
 
                   if (!patchDocument.containsKey("id")) {
-                    val keyMap = objectMapper.readValue(new String(event.key, StandardCharsets.UTF_8), classOf[Map[String,Map[String,Object]]])
-
-                    if (!keyMap.contains("payload")) throw new Exception(s"invalid message format. missing 'key.payload' attribute. got ${keyMap.keys.mkString("["," ,","]")}")
-                    val payload = keyMap.get("payload").getOrElse(throw new Exception("invalid message format. expected 'key.payload' to be Object."))
-
-                    if (!payload.contains("id")) throw new Exception(s"invalid message format. missing 'key.payload.id' attribute. got ${payload.keys.mkString("["," ,","]")}")
-                    val id = Try(payload.get("id").get.asInstanceOf[String]).getOrElse(throw new Exception("invalid message format. expected 'key.payload.id' to be String."))
+                    if (!keyPayload.contains("id")) throw new Exception(s"invalid message format. missing 'key.payload.id' attribute. got ${keyPayload.keys.mkString("["," ,","]")}")
+                    val id = Try(keyPayload.get("id").get).getOrElse(throw new Exception("invalid message format. expected 'key.payload.id' to be String."))
                     updateDocument.append("_id", new BsonString(id));
                   }
 
                   rowFromStringObjectMap(objectMapper.readValue(updateDocument.toJson, classOf[Map[String,Object]]), connector, true)
                 }
-                case OPERATION_DELETE => Try(payload.get("after").get.asInstanceOf[scala.Null]).getOrElse(throw new Exception(s"invalid message format. expected 'value.payload.after' to be null for operation '${OPERATION_DELETE}'."))
+                case OPERATION_DELETE => Try(valuePayload.get("after").get.asInstanceOf[scala.Null]).getOrElse(throw new Exception(s"invalid message format. expected 'value.payload.after' to be null for operation '${OPERATION_DELETE}'."))
               }
               (before, after, keyMask.toSeq)
             }
@@ -481,7 +500,7 @@ object DebeziumTransformStage {
           }
 
           Row(
-            event.key,
+            key,
             event.offset,
             connector,
             operation,
@@ -491,14 +510,39 @@ object DebeziumTransformStage {
           )
         }
       }(eventEncoder)
+      .groupByKey { row => row.getString(EVENT_KEY_INDEX) }
 
+
+    // if previous state is provided inject here
+    val statefulDF = stage.initialStateView.map { initialStateView =>
+      // this group by key needs to be written to map values properly
+      val groupedInitialStateView = spark.table(initialStateView).groupByKey { row => row.get(row.fieldIndex(stage.initialStateKey.get)).toString }
+      debeziumEvents.cogroup(groupedInitialStateView) { case (key, debeziumEvents, initialState) =>
+        initialState.map { row =>
+          Row.fromSeq(
+            Seq(
+              key,
+              0L,
+              CONNECTOR_STATE,
+              OPERATION_READ,
+              null,
+              row,
+              Seq.empty[String]
+            )
+          )
+        } ++
+        debeziumEvents
+      }(eventEncoder)
+      .groupByKey { row => row.getString(EVENT_KEY_INDEX) }
+    }.getOrElse(debeziumEvents)
+
+    // perform the merge
     val outputDF = if (stage.strict) {
-      debeziumEvents
-        .groupByKey(row => row.getAs[Array[Byte]](EVENT_KEY_INDEX))
+      statefulDF
         // mapGroups collects any events in the incoming batch and returns them as complete set
         // false indicates that the group has not been seen by reduceGroups
-        .mapGroups((k, v) => Row(k, false, v.toSeq))(eventsEncoder)
-        .groupByKey(row => row.getAs[Array[Byte]](EVENTS_KEY_INDEX))
+        .mapGroups { (k, v) => Row(k, false, v.toSeq) }(eventsEncoder)
+        .groupByKey { row => row.getString(EVENTS_KEY_INDEX) }
         // reduceGroups
         // 'The given function must be commutative and associative or the result may be non-deterministic'
         // practically this means no order can be guaranteed
@@ -510,22 +554,22 @@ object DebeziumTransformStage {
         // reduceGroups also gets the existing value from the KV set unlike mapGroups
         // it will not be invoked if a previous key is not found
         // this strategy results in a last-write-wins but processes all events to ensure the state is changed correctly from one state to the next
-        .reduceGroups((x: Row, y: Row) => {
+        .reduceGroups{ (x: Row, y: Row) => {
           val events = (x.getSeq[Row](EVENTS_EVENTS_INDEX) ++ y.getSeq[Row](EVENTS_EVENTS_INDEX)).sortBy(event => event.getLong(EVENT_OFFSET_INDEX))
 
           val event = events.head.getString(EVENT_CONNECTOR_INDEX) match {
-            case CONNECTOR_MYSQL | CONNECTOR_POSTGRESQL => validateEvents(events)
+            case CONNECTOR_MYSQL | CONNECTOR_POSTGRESQL | CONNECTOR_STATE => validateEvents(events)
             case CONNECTOR_MONGODB => applyMongoPatch(events)
           }
 
           if (event.getString(EVENT_OPERATION_INDEX) == OPERATION_DELETE) {
-            Row(event.getAs[Array[Byte]](EVENTS_KEY_INDEX), true, Seq.empty[Row])
+            Row(event.getString(EVENTS_KEY_INDEX), true, Seq.empty[Row])
           } else {
-            Row(event.getAs[Array[Byte]](EVENTS_KEY_INDEX), true, Seq(event))
+            Row(event.getString(EVENTS_KEY_INDEX), true, Seq(event))
           }
-        })
+        }}
         // remove deletes
-        .filter( !_._2.getSeq[Row](EVENTS_EVENTS_INDEX).isEmpty )
+        .filter { !_._2.getSeq[Row](EVENTS_EVENTS_INDEX).isEmpty }
         .flatMap { case (_, e) => {
           if (e.getBoolean(EVENTS_EXISTS_INDEX)) {
             // events have been processed by reduceGroups
@@ -535,7 +579,7 @@ object DebeziumTransformStage {
             val events = e.getSeq[Row](EVENTS_EVENTS_INDEX).sortBy(event => event.getLong(EVENT_OFFSET_INDEX))
 
             val event = events.head.getString(EVENT_CONNECTOR_INDEX) match {
-              case CONNECTOR_MYSQL | CONNECTOR_POSTGRESQL => validateEvents(events)
+              case CONNECTOR_MYSQL | CONNECTOR_POSTGRESQL | CONNECTOR_STATE=> validateEvents(events)
               case CONNECTOR_MONGODB => applyMongoPatch(events)
             }
 
@@ -547,8 +591,7 @@ object DebeziumTransformStage {
           }
         }}(schemaEncoder)
     } else {
-      debeziumEvents
-        .groupByKey(row => row.getAs[Array[Byte]](EVENT_KEY_INDEX))
+      statefulDF
         // reduceGroups
         // 'The given function must be commutative and associative or the result may be non-deterministic'
         // practically this means no order can be guaranteed
@@ -559,16 +602,45 @@ object DebeziumTransformStage {
         //
         // reduceGroups also gets the existing value from the KV set unlike mapGroups
         // this strategy is a simple last-write-wins
-        .reduceGroups((x: Row, y: Row) => {
+        .reduceGroups { (x: Row, y: Row) => {
           if (x.getLong(EVENT_OFFSET_INDEX) > y.getLong(EVENT_OFFSET_INDEX)) x else y
-        })
+        }}
         // remove deletes
-        .filter( !_._2.isNullAt(EVENT_AFTER_INDEX) )
-        .map(_._2.getStruct(EVENT_AFTER_INDEX))(schemaEncoder)
+        .filter { !_._2.isNullAt(EVENT_AFTER_INDEX) }
+        .map { _._2.getStruct(EVENT_AFTER_INDEX) }(schemaEncoder)
     }
 
-    if (arcContext.immutableViews) outputDF.createTempView(stage.outputView) else outputDF.createOrReplaceTempView(stage.outputView)
-    Option(outputDF.toDF)
+    // repartition to distribute rows evenly
+    val repartitionedDF = stage.partitionBy match {
+      case Nil => {
+        stage.numPartitions match {
+          case Some(numPartitions) => outputDF.repartition(numPartitions)
+          case None => outputDF
+        }
+      }
+      case partitionBy => {
+        // create a column array for repartitioning
+        val partitionCols = partitionBy.map(col => outputDF(col))
+        stage.numPartitions match {
+          case Some(numPartitions) => outputDF.repartition(numPartitions, partitionCols:_*)
+          case None => outputDF.repartition(partitionCols:_*)
+        }
+      }
+    }
+
+    if (arcContext.immutableViews) repartitionedDF.createTempView(stage.outputView) else repartitionedDF.createOrReplaceTempView(stage.outputView)
+
+    if (!repartitionedDF.isStreaming) {
+      stage.stageDetail.put("outputColumns", Integer.valueOf(repartitionedDF.schema.length))
+      stage.stageDetail.put("numPartitions", Integer.valueOf(repartitionedDF.rdd.partitions.length))
+
+      if (stage.persist) {
+        spark.catalog.cacheTable(stage.outputView, arcContext.storageLevel)
+        stage.stageDetail.put("records", java.lang.Long.valueOf(repartitionedDF.count))
+      }
+    }
+
+    Option(repartitionedDF.toDF)
   }
 
 }

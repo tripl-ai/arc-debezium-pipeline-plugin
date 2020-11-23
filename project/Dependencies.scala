@@ -16,10 +16,10 @@ object Dependencies {
   val sparkAvro = "org.apache.spark" %% "spark-avro" % sparkVersion % "provided"
 
   val sparkSQLKafka = "org.apache.spark" %% "spark-sql-kafka-0-10" % sparkVersion
-  val bson = "org.mongodb" % "bson" % "4.1.1"
 
   val mysql = "mysql" % "mysql-connector-java" % "8.0.22" % "it"
   val mongo = "org.mongodb.spark" %% "mongo-spark-connector" % "3.0.0" % "it"
+  val bson = "org.mongodb" % "bson" % "4.1.1"
   val postgresJDBC = "org.postgresql" % "postgresql" % "42.2.8" % "it"
 
   // Project
@@ -33,10 +33,10 @@ object Dependencies {
     sparkAvro,
 
     sparkSQLKafka,
-    bson,
 
     mysql,
     mongo,
+    bson,
     postgresJDBC,
   )
 }

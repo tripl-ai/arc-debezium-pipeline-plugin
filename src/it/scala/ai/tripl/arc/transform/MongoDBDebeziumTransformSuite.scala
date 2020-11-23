@@ -38,6 +38,8 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
   val outputView = "outputView"
   val schema = "schema"
   val checkpointLocation = "/tmp/debezium"
+  val serverName = "dbserver3"
+  val size = 5000
 
   val database = "inventory"
   val mongoClientURI = s"mongodb://debezium:dbz@mongodb:27017/${database}?authSource=admin&replicaSet=rs0"
@@ -49,7 +51,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
   |    "connector.class": "io.debezium.connector.mongodb.MongoDbConnector",
   |    "tasks.max": "1",
   |    "mongodb.hosts" : "rs0/mongodb:27017",
-  |    "mongodb.name" : "dbserver1",
+  |    "mongodb.name" : "${serverName}",
   |    "mongodb.user" : "debezium",
   |    "mongodb.password" : "dbz",
   |    "database.whitelist": "inventory",
@@ -64,7 +66,9 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
                   .master("local[*]")
                   .config("spark.ui.port", "4040")
                   .config("spark.checkpoint.compress", "true")
+                  .config("spark.sql.shuffle.partitions", 4)
                   .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+                  .config("spark.kryoserializer.buffer.max", "2047m")
                   .config("spark.sql.streaming.checkpointLocation", checkpointLocation)
                   .config("spark.sql.streaming.forceDeleteTempCheckpointLocation", "true")
                   .appName("Arc Test")
@@ -87,7 +91,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         println("Query terminated: " + queryTerminated.id)
       }
       override def onQueryProgress(queryProgress: QueryProgressEvent): Unit = {
-        println(s"numRowsTotal: ${if (queryProgress.progress.stateOperators.length != 0) queryProgress.progress.stateOperators(0).numRowsTotal else "unknown"} inputRowsPerSecond: ${queryProgress.progress.inputRowsPerSecond.round} processedRowsPerSecond: ${queryProgress.progress.processedRowsPerSecond.round}")
+        println(s"numRowsTotal: ${if (queryProgress.progress.stateOperators.length == 0) 0 else queryProgress.progress.stateOperators(0).numRowsTotal} inputRowsPerSecond: ${queryProgress.progress.inputRowsPerSecond.round} processedRowsPerSecond: ${queryProgress.progress.processedRowsPerSecond.round}")
       }
     })
 
@@ -241,13 +245,13 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     (transactions, updates, inserts, deletes)
   }
 
-  test("MongoDBDebeziumTransform") {
+  test("MongoDBDebeziumTransform: Streaming") {
     implicit val spark = session
     import spark.implicits._
     implicit val logger = TestUtils.getLogger()
     implicit val arcContext = TestUtils.getARCContext(isStreaming = true)
 
-    val (customerInitial, customerUpdates) = TestHelpers.getTestData(50000)
+    val (customerInitial, customerUpdates) = TestHelpers.getTestData(size)
     val customersMetadata = MetadataUtils.createMetadataDataframe(customerInitial.toDF.withColumnRenamed("c_custkey", "_id"))
     customersMetadata.persist
     customersMetadata.createOrReplaceTempView(schema)
@@ -269,7 +273,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           .readStream
           .format("kafka")
           .option("kafka.bootstrap.servers", "kafka:9092")
-          .option("subscribe", s"dbserver1.inventory.${tableName}")
+          .option("subscribe", s"${serverName}.inventory.${tableName}")
           .option("startingOffsets", "earliest")
           .load
         readStream.createOrReplaceTempView(inputView)
@@ -283,7 +287,12 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             inputView=inputView,
             outputView=outputView,
             schema=Left(schema),
-            strict=strict
+            strict=strict,
+            initialStateView=None,
+            initialStateKey=None,
+            persist=false,
+            numPartitions=None,
+            partitionBy=List.empty,
           )
         )
 
@@ -301,7 +310,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           // wait for query to start
           val start = System.currentTimeMillis()
           while (writeStream.lastProgress == null || (writeStream.lastProgress != null && writeStream.lastProgress.numInputRows == 0)) {
-            if (System.currentTimeMillis() > start + 180000) throw new Exception("Timeout without messages arriving")
+            if (System.currentTimeMillis() > start + 60000) throw new Exception("Timeout without messages arriving")
             println("Waiting for query progress...")
             Thread.sleep(1000)
           }
@@ -330,15 +339,19 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             mongoSession.commitTransaction
             mongoSession.close
           }
+          println(s"executed ${transactions.length} transactions against ${tableName} with ${update} updates, ${insert} inserts, ${delete} deletes")
 
+          Thread.sleep(5000)
           writeStream.processAllAvailable
           writeStream.stop
 
           // validate results
           val expected = spark.read.format("com.mongodb.spark.sql").options(WriteConfig(Map("uri" -> mongoClientURI, "collection" -> tableName)).asOptions).load
-          assert(TestUtils.datasetEquality(expected, spark.table(tableName),10000))
+          expected.cache
+          assert(expected.count > customerInitial.count)
+          assert(TestUtils.datasetEquality(expected, spark.table(tableName)))
+          println("PASS\n")
 
-          println(s"executed ${transactions.length} transactions against ${tableName} with ${update} updates, ${insert} inserts, ${delete} deletes\n")
         } catch {
           case e: Exception => fail(e.getMessage)
         } finally {
@@ -372,7 +385,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
       .readStream
       .format("kafka")
       .option("kafka.bootstrap.servers", "kafka:9092")
-      .option("subscribe", s"dbserver1.inventory.${tableName}")
+      .option("subscribe", s"${serverName}.inventory.${tableName}")
       .option("startingOffsets", "earliest")
       .load
     readStream.createOrReplaceTempView(inputView)
@@ -386,7 +399,12 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         inputView=inputView,
         outputView=outputView,
         schema=Left(schema),
-        strict=true
+        strict=true,
+        initialStateView=None,
+        initialStateKey=None,
+        persist=false,
+        numPartitions=None,
+        partitionBy=List.empty,
       )
     )
 
@@ -401,7 +419,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
       // wait for query to start
       val start = System.currentTimeMillis()
       while (writeStream.lastProgress == null || (writeStream.lastProgress != null && writeStream.lastProgress.numInputRows == 0)) {
-        if (System.currentTimeMillis() > start + 180000) throw new Exception("Timeout without messages arriving")
+        if (System.currentTimeMillis() > start + 60000) throw new Exception("Timeout without messages arriving")
         println("Waiting for query progress...")
         Thread.sleep(1000)
       }
