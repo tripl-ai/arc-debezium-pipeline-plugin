@@ -405,6 +405,7 @@ object DebeziumTransformStage {
 
           if (!keyMap.contains("payload")) throw new Exception(s"invalid message format. missing 'key.payload' attribute. got ${keyMap.keys.mkString("["," ,","]")}")
           val keyPayload = keyMap.get("payload").getOrElse(throw new Exception("invalid message format. expected 'key.payload' to be Object."))
+          // this currently only supports 1:1 mapping of key when used with initialStateKey
           val key = keyPayload.values.mkString("|")
 
           val valueString = new String(event.value, StandardCharsets.UTF_8)
@@ -514,6 +515,7 @@ object DebeziumTransformStage {
 
     // if previous state is provided inject here
     val statefulDF = stage.initialStateView.map { initialStateView =>
+      // this group by key needs to be written to map values properly
       val groupedInitialStateView = spark.table(initialStateView).groupByKey { row => row.get(row.fieldIndex(stage.initialStateKey.get)).toString }
       debeziumEvents.cogroup(groupedInitialStateView) { case (key, debeziumEvents, initialState) =>
         initialState.map { row =>
@@ -608,19 +610,37 @@ object DebeziumTransformStage {
         .map { _._2.getStruct(EVENT_AFTER_INDEX) }(schemaEncoder)
     }
 
-    if (arcContext.immutableViews) outputDF.createTempView(stage.outputView) else outputDF.createOrReplaceTempView(stage.outputView)
-
-    if (!outputDF.isStreaming) {
-      stage.stageDetail.put("outputColumns", Integer.valueOf(outputDF.schema.length))
-      stage.stageDetail.put("numPartitions", Integer.valueOf(outputDF.rdd.partitions.length))
-
-      if (stage.persist) {
-        spark.catalog.cacheTable(stage.outputView, arcContext.storageLevel)
-        stage.stageDetail.put("records", java.lang.Long.valueOf(outputDF.count))
+    // repartition to distribute rows evenly
+    val repartitionedDF = stage.partitionBy match {
+      case Nil => {
+        stage.numPartitions match {
+          case Some(numPartitions) => outputDF.repartition(numPartitions)
+          case None => outputDF
+        }
+      }
+      case partitionBy => {
+        // create a column array for repartitioning
+        val partitionCols = partitionBy.map(col => outputDF(col))
+        stage.numPartitions match {
+          case Some(numPartitions) => outputDF.repartition(numPartitions, partitionCols:_*)
+          case None => outputDF.repartition(partitionCols:_*)
+        }
       }
     }
 
-    Option(outputDF.toDF)
+    if (arcContext.immutableViews) repartitionedDF.createTempView(stage.outputView) else repartitionedDF.createOrReplaceTempView(stage.outputView)
+
+    if (!repartitionedDF.isStreaming) {
+      stage.stageDetail.put("outputColumns", Integer.valueOf(repartitionedDF.schema.length))
+      stage.stageDetail.put("numPartitions", Integer.valueOf(repartitionedDF.rdd.partitions.length))
+
+      if (stage.persist) {
+        spark.catalog.cacheTable(stage.outputView, arcContext.storageLevel)
+        stage.stageDetail.put("records", java.lang.Long.valueOf(repartitionedDF.count))
+      }
+    }
+
+    Option(repartitionedDF.toDF)
   }
 
 }
