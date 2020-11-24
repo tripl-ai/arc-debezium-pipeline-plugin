@@ -220,6 +220,7 @@ object DebeziumTransformStage {
     stage.stageDetail.put("columns", cols.map(_.name).asJava)
 
     val schema = Extract.toStructType(cols)
+    val caseSensitiveSchema = schema.fields.exists(field => field.name.toLowerCase != field.name )
     val eventSchema = StructType(
       Seq(
         StructField("key", StringType, true),
@@ -250,7 +251,7 @@ object DebeziumTransformStage {
     def rowFromStringObjectMap(afterMap: Map[String,Object], connector: String, placeholders: Boolean): Row = {
 
       // postgres does not support case sensitive column names
-      val fields = if (connector == CONNECTOR_POSTGRESQL) {
+      val fields = if (caseSensitiveSchema && connector == CONNECTOR_POSTGRESQL) {
         schema.fields.map { field => StructField(field.name.toLowerCase, field.dataType, field.nullable) }
       } else {
         schema.fields
