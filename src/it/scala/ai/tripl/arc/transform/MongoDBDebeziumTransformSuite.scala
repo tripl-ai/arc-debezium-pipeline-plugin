@@ -363,6 +363,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         }
       }
     }
+    customerInitial.unpersist
   }
 
   test("MongoDBDebeziumTransform: Types") {

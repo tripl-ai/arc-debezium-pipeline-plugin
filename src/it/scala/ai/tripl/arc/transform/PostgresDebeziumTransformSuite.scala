@@ -388,6 +388,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         }
       }
     }
+    customerInitial.unpersist
   }
 
   test("PostgresDebeziumTransform: Types") {
@@ -713,6 +714,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         }
       }
     }
+    customerInitial.unpersist
   }
 
 }

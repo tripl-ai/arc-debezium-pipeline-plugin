@@ -381,6 +381,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         }
       }
     }
+    customerInitial.unpersist
   }
 
   test("MySQLDebeziumTransform: Types") {
@@ -697,6 +698,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         }
       }
     }
+    customerInitial.unpersist
   }
 
 }
