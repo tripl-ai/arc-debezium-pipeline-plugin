@@ -299,34 +299,36 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           var last = System.currentTimeMillis()
           var i = 0
           var deadlocks = 0
-          transactions.foreach { sql =>
-            if (System.currentTimeMillis() > last+1000) {
-              last = System.currentTimeMillis()
-              println(s"${i} transactions/sec (${deadlocks} deadlocks)")
-              i = 0
-            }
-            i += 1
-            breakable {
-              while(true){
-                try {
-                  ai.tripl.arc.execute.JDBCExecuteStage.execute(
-                    ai.tripl.arc.execute.JDBCExecuteStage(
-                      plugin=new ai.tripl.arc.execute.JDBCExecute,
-                      id=None,
-                      name="JDBCExecute",
-                      description=None,
-                      inputURI=new URI(databaseURL),
-                      jdbcURL=databaseURL,
-                      sql=sql,
-                      params=Map.empty,
-                      sqlParams=Map.empty
-                    )
-                  )
-                  break
-                } catch {
-                  case e: Exception if e.getMessage.contains("could not serialize access") => {
-                    deadlocks += 1
-                    Thread.sleep(200)
+          ControlUtils.using(DriverManager.getConnection(databaseURL, new java.util.Properties)) { connection =>
+            ControlUtils.using(connection.createStatement) { stmt =>
+              transactions.foreach { sql =>
+                if (System.currentTimeMillis() > last+1000) {
+                  last = System.currentTimeMillis()
+                  println(s"${i} transactions/sec (${deadlocks} deadlocks)")
+                  i = 0
+                }
+                i += 1
+                var retry = 0
+                breakable {
+                  while(true){
+                    if (retry == 100) {
+                      throw new Exception("could not complete transaciton due to deadlocks")
+                      break
+                    }
+                    try {
+                        val res = stmt.execute(sql)
+                        // try to get results to throw error if one exists
+                        if (res) {
+                          stmt.getResultSet.next
+                        }
+                      break
+                    } catch {
+                      case e: Exception if e.getMessage.contains("Deadlock found") => {
+                        retry += 1
+                        deadlocks += 1
+                        Thread.sleep(200)
+                      }
+                    }
                   }
                 }
               }
@@ -579,34 +581,36 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           var last = System.currentTimeMillis()
           var i = 0
           var deadlocks = 0
-          transactions.foreach { sql =>
-            if (System.currentTimeMillis() > last+1000) {
-              last = System.currentTimeMillis()
-              println(s"${i} transactions/sec (${deadlocks} deadlocks)")
-              i = 0
-            }
-            i += 1
-            breakable {
-              while(true){
-                try {
-                  ai.tripl.arc.execute.JDBCExecuteStage.execute(
-                    ai.tripl.arc.execute.JDBCExecuteStage(
-                      plugin=new ai.tripl.arc.execute.JDBCExecute,
-                      id=None,
-                      name="JDBCExecute",
-                      description=None,
-                      inputURI=new URI(databaseURL),
-                      jdbcURL=databaseURL,
-                      sql=sql,
-                      params=Map.empty,
-                      sqlParams=Map.empty
-                    )
-                  )
-                  break
-                } catch {
-                  case e: Exception if e.getMessage.contains("could not serialize access") => {
-                    deadlocks += 1
-                    Thread.sleep(100)
+          ControlUtils.using(DriverManager.getConnection(databaseURL, new java.util.Properties)) { connection =>
+            ControlUtils.using(connection.createStatement) { stmt =>
+              transactions.foreach { sql =>
+                if (System.currentTimeMillis() > last+1000) {
+                  last = System.currentTimeMillis()
+                  println(s"${i} transactions/sec (${deadlocks} deadlocks)")
+                  i = 0
+                }
+                i += 1
+                var retry = 0
+                breakable {
+                  while(true){
+                    if (retry == 100) {
+                      throw new Exception("could not complete transaciton due to deadlocks")
+                      break
+                    }
+                    try {
+                        val res = stmt.execute(sql)
+                        // try to get results to throw error if one exists
+                        if (res) {
+                          stmt.getResultSet.next
+                        }
+                      break
+                    } catch {
+                      case e: Exception if e.getMessage.contains("Deadlock found") => {
+                        retry += 1
+                        deadlocks += 1
+                        Thread.sleep(200)
+                      }
+                    }
                   }
                 }
               }
