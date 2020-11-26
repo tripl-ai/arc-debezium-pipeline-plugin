@@ -42,6 +42,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
   val databaseURL = "jdbc:postgresql://postgres:5432/postgres?currentSchema=inventory&user=postgres&password=postgres"
   val connectURI = s"http://connect:8083/connectors/"
   val connectorName = "inventory-connector-postgres"
+  val kafkaBootstrap = "kafka:9092"
 
   before {
     implicit val spark = SparkSession
@@ -98,7 +99,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     |    "database.password": "postgres",
     |    "database.dbname": "postgres",
     |    "database.server.name": "${serverName}",
-    |    "database.history.kafka.bootstrap.servers": "kafka:9092",
+    |    "database.history.kafka.bootstrap.servers": "${kafkaBootstrap}",
     |    "database.history.kafka.topic": "schema-changes.inventory",
     |    "schema.include.list": "inventory",
     |    "message.key.columns": "${tableName}:${key}",

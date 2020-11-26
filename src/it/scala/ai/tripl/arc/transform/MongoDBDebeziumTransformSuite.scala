@@ -45,6 +45,8 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
   val mongoClientURI = s"mongodb://debezium:dbz@mongodb:27017/${database}?authSource=admin&replicaSet=rs0"
   val connectURI = s"http://connect:8083/connectors/"
   val connectorName = "inventory-connector-mongo"
+  val kafkaBootstrap = "kafka:9092"
+
   val connectorConfig = s"""{
   |  "name": "${connectorName}",
   |  "config": {
@@ -55,7 +57,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
   |    "mongodb.user" : "debezium",
   |    "mongodb.password" : "dbz",
   |    "database.whitelist": "inventory",
-  |    "database.history.kafka.bootstrap.servers": "kafka:9092",
+  |    "database.history.kafka.bootstrap.servers": "${kafkaBootstrap}",
   |    "database.history.kafka.topic": "schema-changes.inventory"
   |  }
   |}""".stripMargin

@@ -42,6 +42,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
   val databaseURL = "jdbc:mysql://mysql:3306/inventory?user=root&password=debezium&allowMultiQueries=true"
   val connectURI = s"http://connect:8083/connectors/"
   val connectorName = "inventory-connector-mysql"
+  val kafkaBootstrap = "kafka:9092"
 
   before {
     implicit val spark = SparkSession
@@ -99,7 +100,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     |    "database.server.id": "184054",
     |    "database.server.name": "${serverName}",
     |    "database.whitelist": "inventory",
-    |    "database.history.kafka.bootstrap.servers": "kafka:9092",
+    |    "database.history.kafka.bootstrap.servers": "${kafkaBootstrap}",
     |    "database.history.kafka.topic": "schema-changes.inventory",
     |    "message.key.columns": "${tableName}:${key}",
     |    "decimal.handling.mode": "string"
