@@ -219,12 +219,25 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             description=None,
             inputURI=new URI(databaseURL),
             jdbcURL=databaseURL,
-            sql=makeTransaction(Seq(s"CREATE TABLE ${tableName} (c_custkey INTEGER PRIMARY KEY NOT NULL, c_name VARCHAR(25) NOT NULL, c_address VARCHAR(40) NOT NULL, c_nationkey INTEGER NOT NULL, c_phone VARCHAR(15) NOT NULL, c_acctbal DECIMAL(20,2) NOT NULL, c_mktsegment VARCHAR(10) NOT NULL, c_comment VARCHAR(117) NOT NULL);")),
+            sql=makeTransaction(Seq(s"CREATE TABLE ${tableName} (c_custkey INTEGER NOT NULL, c_name VARCHAR(25) NOT NULL, c_address VARCHAR(40) NOT NULL, c_nationkey INTEGER NOT NULL, c_phone VARCHAR(15) NOT NULL, c_acctbal DECIMAL(20,2) NOT NULL, c_mktsegment VARCHAR(10) NOT NULL, c_comment VARCHAR(117) NOT NULL);")),
             params=Map.empty,
             sqlParams=Map.empty
           )
         )
-        customerInitial.write.mode("append").jdbc(databaseURL, s"inventory.${tableName}", new java.util.Properties)
+        customerInitial.write.mode("append").jdbc(databaseURL, tableName, new java.util.Properties)
+        ai.tripl.arc.execute.JDBCExecuteStage.execute(
+          ai.tripl.arc.execute.JDBCExecuteStage(
+            plugin=new ai.tripl.arc.execute.JDBCExecute,
+            id=None,
+            name="JDBCExecute",
+            description=None,
+            inputURI=new URI(databaseURL),
+            jdbcURL=databaseURL,
+            sql=makeTransaction(Seq(s"ALTER TABLE ${tableName} ADD PRIMARY KEY (c_custkey);")),
+            params=Map.empty,
+            sqlParams=Map.empty
+          )
+        )
 
         // make transactions
         val (transactions, update, insert, delete) = makeTransactions(customerInitial, customerUpdates, tableName, seed)
@@ -399,7 +412,6 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         sqlParams=Map.empty
       )
     )
-
     knownData.write.mode("append").jdbc(databaseURL, s"inventory.${tableName}", new java.util.Properties)
 
     TestHelpers.registerConnector(connectURI, makeConnectorConfig(s"inventory.${tableName}", "integerDatum"))

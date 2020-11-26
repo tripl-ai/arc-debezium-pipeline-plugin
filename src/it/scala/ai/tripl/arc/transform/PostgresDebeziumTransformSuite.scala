@@ -231,7 +231,20 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             sqlParams=Map.empty
           )
         )
-        customerInitial.write.mode("append").jdbc(databaseURL, s"${tableName}", new java.util.Properties)
+        customerInitial.write.mode("append").jdbc(databaseURL, tableName, new java.util.Properties)
+        ai.tripl.arc.execute.JDBCExecuteStage.execute(
+          ai.tripl.arc.execute.JDBCExecuteStage(
+            plugin=new ai.tripl.arc.execute.JDBCExecute,
+            id=None,
+            name="JDBCExecute",
+            description=None,
+            inputURI=new URI(databaseURL),
+            jdbcURL=databaseURL,
+            sql=makeTransaction(Seq(s"ALTER TABLE ${tableName} ADD PRIMARY KEY (c_custkey);")),
+            params=Map.empty,
+            sqlParams=Map.empty
+          )
+        )
 
         // make transactions
         val (transactions, update, insert, delete) = makeTransactions(customerInitial, customerUpdates, tableName, seed)
