@@ -44,6 +44,15 @@ class DebeziumTransform extends PipelineStagePlugin with JupyterCompleter {
   val version = ai.tripl.arc.debezium.BuildInfo.version
 
   val snippet = """{
+    |  "type": "DebeziumTransform",
+    |  "name": "DebeziumTransform",
+    |  "environments": [
+    |    "production",
+    |    "test"
+    |  ],
+    |  "inputView": "inputView",
+    |  "outputView": "outputView",
+    |  "schemaURI": "hdfs://*.json"
     |}""".stripMargin
 
   val documentationURI = new java.net.URI(s"${baseURI}/transform/#debeziumtransform")
@@ -220,6 +229,7 @@ object DebeziumTransformStage {
     stage.stageDetail.put("columns", cols.map(_.name).asJava)
 
     val schema = Extract.toStructType(cols)
+    val caseSensitiveSchema = schema.fields.exists(field => field.name.toLowerCase != field.name )
     val eventSchema = StructType(
       Seq(
         StructField("key", StringType, true),
@@ -250,7 +260,7 @@ object DebeziumTransformStage {
     def rowFromStringObjectMap(afterMap: Map[String,Object], connector: String, placeholders: Boolean): Row = {
 
       // postgres does not support case sensitive column names
-      val fields = if (connector == CONNECTOR_POSTGRESQL) {
+      val fields = if (caseSensitiveSchema && connector == CONNECTOR_POSTGRESQL) {
         schema.fields.map { field => StructField(field.name.toLowerCase, field.dataType, field.nullable) }
       } else {
         schema.fields
@@ -554,42 +564,46 @@ object DebeziumTransformStage {
         // reduceGroups also gets the existing value from the KV set unlike mapGroups
         // it will not be invoked if a previous key is not found
         // this strategy results in a last-write-wins but processes all events to ensure the state is changed correctly from one state to the next
-        .reduceGroups{ (x: Row, y: Row) => {
-          val events = (x.getSeq[Row](EVENTS_EVENTS_INDEX) ++ y.getSeq[Row](EVENTS_EVENTS_INDEX)).sortBy(event => event.getLong(EVENT_OFFSET_INDEX))
-
-          val event = events.head.getString(EVENT_CONNECTOR_INDEX) match {
-            case CONNECTOR_MYSQL | CONNECTOR_POSTGRESQL | CONNECTOR_STATE => validateEvents(events)
-            case CONNECTOR_MONGODB => applyMongoPatch(events)
-          }
-
-          if (event.getString(EVENT_OPERATION_INDEX) == OPERATION_DELETE) {
-            Row(event.getString(EVENTS_KEY_INDEX), true, Seq.empty[Row])
-          } else {
-            Row(event.getString(EVENTS_KEY_INDEX), true, Seq(event))
-          }
-        }}
-        // remove deletes
-        .filter { !_._2.getSeq[Row](EVENTS_EVENTS_INDEX).isEmpty }
-        .flatMap { case (_, e) => {
-          if (e.getBoolean(EVENTS_EXISTS_INDEX)) {
-            // events have been processed by reduceGroups
-            Some(e.getSeq[Row](EVENTS_EVENTS_INDEX).last.getStruct(EVENT_AFTER_INDEX))
-          } else {
-            // events have not been processed by reduceGroups
-            val events = e.getSeq[Row](EVENTS_EVENTS_INDEX).sortBy(event => event.getLong(EVENT_OFFSET_INDEX))
+        .reduceGroups {
+          (x: Row, y: Row) => {
+            val events = (x.getSeq[Row](EVENTS_EVENTS_INDEX) ++ y.getSeq[Row](EVENTS_EVENTS_INDEX)).sortBy(event => event.getLong(EVENT_OFFSET_INDEX))
 
             val event = events.head.getString(EVENT_CONNECTOR_INDEX) match {
-              case CONNECTOR_MYSQL | CONNECTOR_POSTGRESQL | CONNECTOR_STATE=> validateEvents(events)
+              case CONNECTOR_MYSQL | CONNECTOR_POSTGRESQL | CONNECTOR_STATE => validateEvents(events)
               case CONNECTOR_MONGODB => applyMongoPatch(events)
             }
 
             if (event.getString(EVENT_OPERATION_INDEX) == OPERATION_DELETE) {
-              None
+              Row(event.getString(EVENTS_KEY_INDEX), true, Seq.empty[Row])
             } else {
-              Some(event.getStruct(EVENT_AFTER_INDEX))
+              Row(event.getString(EVENTS_KEY_INDEX), true, Seq(event))
             }
           }
-        }}(schemaEncoder)
+        }
+        // remove deletes
+        .filter { !_._2.getSeq[Row](EVENTS_EVENTS_INDEX).isEmpty }
+        .flatMap {
+          case (_, e) => {
+            if (e.getBoolean(EVENTS_EXISTS_INDEX)) {
+              // events have been processed by reduceGroups
+              Some(e.getSeq[Row](EVENTS_EVENTS_INDEX).last.getStruct(EVENT_AFTER_INDEX))
+            } else {
+              // events have not been processed by reduceGroups
+              val events = e.getSeq[Row](EVENTS_EVENTS_INDEX).sortBy(event => event.getLong(EVENT_OFFSET_INDEX))
+
+              val event = events.head.getString(EVENT_CONNECTOR_INDEX) match {
+                case CONNECTOR_MYSQL | CONNECTOR_POSTGRESQL | CONNECTOR_STATE=> validateEvents(events)
+                case CONNECTOR_MONGODB => applyMongoPatch(events)
+              }
+
+              if (event.getString(EVENT_OPERATION_INDEX) == OPERATION_DELETE) {
+                None
+              } else {
+                Some(event.getStruct(EVENT_AFTER_INDEX))
+              }
+            }
+          }
+        }(schemaEncoder)
     } else {
       statefulDF
         // reduceGroups
@@ -602,9 +616,11 @@ object DebeziumTransformStage {
         //
         // reduceGroups also gets the existing value from the KV set unlike mapGroups
         // this strategy is a simple last-write-wins
-        .reduceGroups { (x: Row, y: Row) => {
-          if (x.getLong(EVENT_OFFSET_INDEX) > y.getLong(EVENT_OFFSET_INDEX)) x else y
-        }}
+        .reduceGroups {
+          (x: Row, y: Row) => {
+            if (x.getLong(EVENT_OFFSET_INDEX) > y.getLong(EVENT_OFFSET_INDEX)) x else y
+          }
+        }
         // remove deletes
         .filter { !_._2.isNullAt(EVENT_AFTER_INDEX) }
         .map { _._2.getStruct(EVENT_AFTER_INDEX) }(schemaEncoder)

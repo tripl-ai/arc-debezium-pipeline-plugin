@@ -1,5 +1,9 @@
 # Change Log
 
+## 1.1.1
+
+- **FIX** correct the code snippet for use with Arc Jupyter.
+
 ## 1.1.0
 
 - remove constraint to only support `streaming` mode.
