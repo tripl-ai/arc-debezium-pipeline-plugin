@@ -210,7 +210,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     for (seed <- 0 to 0) {
       for (strict <- Seq(true, false)) {
         val tableName = s"customers_${UUID.randomUUID.toString.replaceAll("-","")}"
-        println(s"mysql ${if (strict) "strict" else "not-strict"} seed: ${seed} target: ${tableName}")
+        println(s"streaming mysql ${if (strict) "strict" else "not-strict"} seed: ${seed} target: ${tableName}")
 
         ai.tripl.arc.execute.JDBCExecuteStage.execute(
           ai.tripl.arc.execute.JDBCExecuteStage(
@@ -499,7 +499,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     for (seed <- 0 to 0) {
       for (strict <- Seq(true, false)) {
         val tableName = s"customers_${UUID.randomUUID.toString.replaceAll("-","")}"
-        println(s"mysql ${if (strict) "strict" else "not-strict"} seed: ${seed} target: ${tableName}")
+        println(s"batch mysql ${if (strict) "strict" else "not-strict"} seed: ${seed} target: ${tableName}")
 
         ai.tripl.arc.execute.JDBCExecuteStage.execute(
           ai.tripl.arc.execute.JDBCExecuteStage(

@@ -262,7 +262,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     for (seed <- 0 to 0) {
       for (strict <- Seq(true)) {
         val tableName = s"customers_${UUID.randomUUID.toString.replaceAll("-","")}"
-        println(s"mongo ${if (strict) "strict" else "not-strict"} seed: ${seed} target: ${tableName}")
+        println(s"streaming mongo ${if (strict) "strict" else "not-strict"} seed: ${seed} target: ${tableName}")
 
         customerInitial.withColumnRenamed("c_custkey", "_id").write.format("com.mongodb.spark.sql").options(WriteConfig(Map("uri" -> mongoClientURI, "collection" -> tableName)).asOptions).save
 
