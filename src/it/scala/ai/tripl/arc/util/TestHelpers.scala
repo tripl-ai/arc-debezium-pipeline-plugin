@@ -36,6 +36,7 @@ object TestHelpers {
         col("_c6").as("c_mktsegment"),
         col("_c7").as("c_comment"),
       ).as[Customer]
+      .repartition(100)
     customerRaw.createOrReplaceTempView("customer")
     val count = customerRaw.cache.count
     val splitAt = (count * 0.6).toInt
