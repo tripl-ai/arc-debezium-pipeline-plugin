@@ -626,20 +626,26 @@ object DebeziumTransformStage {
         .map { _._2.getStruct(EVENT_AFTER_INDEX) }(schemaEncoder)
     }
 
+    // set column metadata if exists
+    val enrichedDF = optionSchema match {
+        case Some(schema) => MetadataUtils.setMetadata(outputDF, schema)
+        case None => outputDF
+    }
+
     // repartition to distribute rows evenly
     val repartitionedDF = stage.partitionBy match {
       case Nil => {
         stage.numPartitions match {
-          case Some(numPartitions) => outputDF.repartition(numPartitions)
-          case None => outputDF
+          case Some(numPartitions) => enrichedDF.repartition(numPartitions)
+          case None => enrichedDF
         }
       }
       case partitionBy => {
         // create a column array for repartitioning
-        val partitionCols = partitionBy.map(col => outputDF(col))
+        val partitionCols = partitionBy.map(col => enrichedDF(col))
         stage.numPartitions match {
-          case Some(numPartitions) => outputDF.repartition(numPartitions, partitionCols:_*)
-          case None => outputDF.repartition(partitionCols:_*)
+          case Some(numPartitions) => enrichedDF.repartition(numPartitions, partitionCols:_*)
+          case None => enrichedDF.repartition(partitionCols:_*)
         }
       }
     }

@@ -1,5 +1,9 @@
 # Change Log
 
+## 1.1.2
+
+- **FIX** ensure schema metadata is set to be consistent with other Arc `*Extract` stages.
+
 ## 1.1.1
 
 - **FIX** correct the code snippet for use with Arc Jupyter.
