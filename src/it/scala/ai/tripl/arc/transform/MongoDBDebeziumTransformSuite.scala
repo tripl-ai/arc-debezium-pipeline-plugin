@@ -45,6 +45,8 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
   val mongoClientURI = s"mongodb://debezium:dbz@mongodb:27017/${database}?authSource=admin&replicaSet=rs0"
   val connectURI = s"http://connect:8083/connectors/"
   val connectorName = "inventory-connector-mongo"
+  val kafkaBootstrap = "kafka:9092"
+
   val connectorConfig = s"""{
   |  "name": "${connectorName}",
   |  "config": {
@@ -55,7 +57,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
   |    "mongodb.user" : "debezium",
   |    "mongodb.password" : "dbz",
   |    "database.whitelist": "inventory",
-  |    "database.history.kafka.bootstrap.servers": "kafka:9092",
+  |    "database.history.kafka.bootstrap.servers": "${kafkaBootstrap}",
   |    "database.history.kafka.topic": "schema-changes.inventory"
   |  }
   |}""".stripMargin
@@ -116,13 +118,13 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     document: Option[BsonDocument],
   )
 
-  def makeTransactions(customerInitial: Dataset[ai.tripl.arc.util.Customer], customerUpdates: Seq[ai.tripl.arc.util.Customer], seed: Int, limit: Int = Int.MaxValue): (Seq[Seq[Transaction]], Int, Int, Int) = {
+  def makeCustomerTransactions(customersInitial: Dataset[ai.tripl.arc.util.Customer], customersUpdates: Seq[ai.tripl.arc.util.Customer], seed: Int, limit: Int = Int.MaxValue): (Seq[Seq[Transaction]], Int, Int, Int) = {
 
     val random = new Random(seed)
 
-    val customerUpdatesShuffle = random.shuffle(customerUpdates).take(limit)
+    val customersUpdatesShuffle = random.shuffle(customersUpdates).take(limit)
 
-    val existingIds = customerInitial.collect.map { customer => customer.c_custkey }.toSeq
+    val existingIds = customersInitial.collect.map { customer => customer.c_custkey }.toSeq
 
     var transactions = Seq[Seq[Transaction]]()
     var i = 0
@@ -130,9 +132,9 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     var inserts = 0
     var deletes = 0
 
-    while (i < customerUpdatesShuffle.length) {
+    while (i < customersUpdatesShuffle.length) {
       val len = (random.nextGaussian.abs * 5).ceil.toInt
-      val transaction = customerUpdatesShuffle.drop(i).take(len).flatMap { customer =>
+      val transaction = customersUpdatesShuffle.drop(i).take(len).flatMap { customer =>
         random.nextInt(4) match {
           // update
           case 0 => {
@@ -251,21 +253,22 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     implicit val logger = TestUtils.getLogger()
     implicit val arcContext = TestUtils.getARCContext(isStreaming = true)
 
-    val (customerInitial, customerUpdates) = TestHelpers.getTestData(size)
-    val customersMetadata = MetadataUtils.createMetadataDataframe(customerInitial.toDF.withColumnRenamed("c_custkey", "_id"))
+    val (customersInitial, customersUpdates) = TestHelpers.getTestCustomerData("customer.tbl.gz", size)
+    val customersMetadata = MetadataUtils.createMetadataDataframe(customersInitial.toDF.withColumnRenamed("c_custkey", "_id"))
     customersMetadata.persist
     customersMetadata.createOrReplaceTempView(schema)
 
     println()
     for (seed <- 0 to 0) {
       for (strict <- Seq(true)) {
+        FileUtils.deleteQuietly(new java.io.File(checkpointLocation))
         val tableName = s"customers_${UUID.randomUUID.toString.replaceAll("-","")}"
-        println(s"mongo ${if (strict) "strict" else "not-strict"} seed: ${seed} target: ${tableName}")
+        println(s"streaming mongo ${if (strict) "strict" else "not-strict"} seed: ${seed} target: ${tableName}")
 
-        customerInitial.withColumnRenamed("c_custkey", "_id").write.format("com.mongodb.spark.sql").options(WriteConfig(Map("uri" -> mongoClientURI, "collection" -> tableName)).asOptions).save
+        customersInitial.withColumnRenamed("c_custkey", "_id").write.format("com.mongodb.spark.sql").options(WriteConfig(Map("uri" -> mongoClientURI, "collection" -> tableName)).asOptions).save
 
         // make transactions
-        val (transactions, update, insert, delete) = makeTransactions(customerInitial, customerUpdates, seed)
+        val (transactions, update, insert, delete) = makeCustomerTransactions(customersInitial, customersUpdates, seed)
 
         TestHelpers.registerConnector(connectURI, connectorConfig)
 
@@ -348,7 +351,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           // validate results
           val expected = spark.read.format("com.mongodb.spark.sql").options(WriteConfig(Map("uri" -> mongoClientURI, "collection" -> tableName)).asOptions).load
           expected.cache
-          assert(expected.count > customerInitial.count)
+          assert(expected.count > customersInitial.count)
           assert(TestUtils.datasetEquality(expected, spark.table(tableName)))
           println("PASS\n")
 
@@ -361,6 +364,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         }
       }
     }
+    customersInitial.unpersist
   }
 
   test("MongoDBDebeziumTransform: Types") {

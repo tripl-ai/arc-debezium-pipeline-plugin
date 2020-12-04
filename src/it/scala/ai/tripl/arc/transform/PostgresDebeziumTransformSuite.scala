@@ -42,6 +42,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
   val databaseURL = "jdbc:postgresql://postgres:5432/postgres?currentSchema=inventory&user=postgres&password=postgres"
   val connectURI = s"http://connect:8083/connectors/"
   val connectorName = "inventory-connector-postgres"
+  val kafkaBootstrap = "kafka:9092"
 
   before {
     implicit val spark = SparkSession
@@ -98,7 +99,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     |    "database.password": "postgres",
     |    "database.dbname": "postgres",
     |    "database.server.name": "${serverName}",
-    |    "database.history.kafka.bootstrap.servers": "kafka:9092",
+    |    "database.history.kafka.bootstrap.servers": "${kafkaBootstrap}",
     |    "database.history.kafka.topic": "schema-changes.inventory",
     |    "schema.include.list": "inventory",
     |    "message.key.columns": "${tableName}:${key}",
@@ -117,13 +118,13 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     """.stripMargin
   }
 
-  def makeTransactions(customerInitial: Dataset[ai.tripl.arc.util.Customer], customerUpdates: Seq[ai.tripl.arc.util.Customer], tableName: String, seed: Int, limit: Int = Int.MaxValue): (Seq[String], Int, Int, Int) = {
+  def makeCustomerTransactions(customersInitial: Dataset[ai.tripl.arc.util.Customer], customersUpdates: Seq[ai.tripl.arc.util.Customer], tableName: String, seed: Int, limit: Int = Int.MaxValue): (Seq[String], Int, Int, Int) = {
 
     val random = new Random(seed)
 
-    val customerUpdatesShuffle = random.shuffle(customerUpdates).take(limit)
+    val customersUpdatesShuffle = random.shuffle(customersUpdates).take(limit)
 
-    val existingIds = customerInitial.collect.map { customer => customer.c_custkey }.toSeq
+    val existingIds = customersInitial.collect.map { customer => customer.c_custkey }.toSeq
 
     var transactions = Seq[String]()
     var i = 0
@@ -131,10 +132,10 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     var inserts = 0
     var deletes = 0
 
-    while (i < customerUpdatesShuffle.length) {
+    while (i < customersUpdatesShuffle.length) {
       val len = (random.nextGaussian.abs * 5).ceil.toInt
       val transaction = makeTransaction(
-      customerUpdatesShuffle.drop(i).take(len).flatMap { customer =>
+      customersUpdatesShuffle.drop(i).take(len).flatMap { customer =>
         random.nextInt(4) match {
           // full update
           case 0 => {
@@ -201,16 +202,17 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     implicit val logger = TestUtils.getLogger()
     implicit val arcContext = TestUtils.getARCContext(isStreaming = true)
 
-    val (customerInitial, customerUpdates) = TestHelpers.getTestData(size)
-    val customersMetadata = MetadataUtils.createMetadataDataframe(customerInitial.toDF)
+    val (customersInitial, customersUpdates) = TestHelpers.getTestCustomerData("customer.tbl.gz", size)
+    val customersMetadata = MetadataUtils.createMetadataDataframe(customersInitial.toDF)
     customersMetadata.persist
     customersMetadata.createOrReplaceTempView(schema)
 
     println()
     for (seed <- 0 to 0) {
       for (strict <- Seq(true, false)) {
+        FileUtils.deleteQuietly(new java.io.File(checkpointLocation))
         val tableName = s"customers_${UUID.randomUUID.toString.replaceAll("-","")}"
-        println(s"postgres ${if (strict) "strict" else "not-strict"} seed: ${seed} target: ${tableName}")
+        println(s"streaming postgres ${if (strict) "strict" else "not-strict"} seed: ${seed} target: ${tableName}")
 
         ai.tripl.arc.execute.JDBCExecuteStage.execute(
           ai.tripl.arc.execute.JDBCExecuteStage(
@@ -230,10 +232,23 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             sqlParams=Map.empty
           )
         )
-        customerInitial.write.mode("append").jdbc(databaseURL, s"${tableName}", new java.util.Properties)
+        customersInitial.write.mode("append").jdbc(databaseURL, tableName, new java.util.Properties)
+        ai.tripl.arc.execute.JDBCExecuteStage.execute(
+          ai.tripl.arc.execute.JDBCExecuteStage(
+            plugin=new ai.tripl.arc.execute.JDBCExecute,
+            id=None,
+            name="JDBCExecute",
+            description=None,
+            inputURI=new URI(databaseURL),
+            jdbcURL=databaseURL,
+            sql=makeTransaction(Seq(s"ALTER TABLE ${tableName} ADD PRIMARY KEY (c_custkey);")),
+            params=Map.empty,
+            sqlParams=Map.empty
+          )
+        )
 
         // make transactions
-        val (transactions, update, insert, delete) = makeTransactions(customerInitial, customerUpdates, tableName, seed)
+        val (transactions, update, insert, delete) = makeCustomerTransactions(customersInitial, customersUpdates, tableName, seed)
 
         TestHelpers.registerConnector(connectURI, makeConnectorConfig(s"inventory.${tableName}", "c_custkey"))
 
@@ -285,34 +300,36 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           var last = System.currentTimeMillis()
           var i = 0
           var deadlocks = 0
-          transactions.foreach { sql =>
-            if (System.currentTimeMillis() > last+1000) {
-              last = System.currentTimeMillis()
-              println(s"${i} transactions/sec (${deadlocks} deadlocks)")
-              i = 0
-            }
-            i += 1
-            breakable {
-              while(true){
-                try {
-                  ai.tripl.arc.execute.JDBCExecuteStage.execute(
-                    ai.tripl.arc.execute.JDBCExecuteStage(
-                      plugin=new ai.tripl.arc.execute.JDBCExecute,
-                      id=None,
-                      name="JDBCExecute",
-                      description=None,
-                      inputURI=new URI(databaseURL),
-                      jdbcURL=databaseURL,
-                      sql=sql,
-                      params=Map.empty,
-                      sqlParams=Map.empty
-                    )
-                  )
-                  break
-                } catch {
-                  case e: Exception if e.getMessage.contains("could not serialize access") => {
-                    deadlocks += 1
-                    Thread.sleep(200)
+          ControlUtils.using(DriverManager.getConnection(databaseURL, new java.util.Properties)) { connection =>
+            ControlUtils.using(connection.createStatement) { stmt =>
+              transactions.foreach { sql =>
+                if (System.currentTimeMillis() > last+1000) {
+                  last = System.currentTimeMillis()
+                  println(s"${i} transactions/sec (${deadlocks} deadlocks)")
+                  i = 0
+                }
+                i += 1
+                var retry = 0
+                breakable {
+                  while(true){
+                    if (retry == 100) {
+                      throw new Exception("could not complete transaction due to deadlocks")
+                      break
+                    }
+                    try {
+                        val res = stmt.execute(sql)
+                        // try to get results to throw error if one exists
+                        if (res) {
+                          stmt.getResultSet.next
+                        }
+                      break
+                    } catch {
+                      case e: Exception if e.getMessage.contains("Deadlock found") => {
+                        retry += 1
+                        deadlocks += 1
+                        Thread.sleep(200)
+                      }
+                    }
                   }
                 }
               }
@@ -346,7 +363,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
               params=Map.empty
             )
           ).get
-          assert(expected.count > customerInitial.count)
+          assert(expected.count > customersInitial.count)
           assert(TestUtils.datasetEquality(expected, spark.table(tableName)))
           println("PASS\n")
 
@@ -372,6 +389,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         }
       }
     }
+    customersInitial.unpersist
   }
 
   test("PostgresDebeziumTransform: Types") {
@@ -486,8 +504,8 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     implicit val logger = TestUtils.getLogger()
     implicit val arcContext = TestUtils.getARCContext(isStreaming = true)
 
-    val (customerInitial, customerUpdates) = TestHelpers.getTestData(size)
-    val customersMetadata = MetadataUtils.createMetadataDataframe(customerInitial.toDF)
+    val (customersInitial, customersUpdates) = TestHelpers.getTestCustomerData("customer.tbl.gz", size)
+    val customersMetadata = MetadataUtils.createMetadataDataframe(customersInitial.toDF)
     customersMetadata.persist
     customersMetadata.createOrReplaceTempView(schema)
 
@@ -495,7 +513,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     for (seed <- 0 to 0) {
       for (strict <- Seq(true, false)) {
         val tableName = s"customers_${UUID.randomUUID.toString.replaceAll("-","")}"
-        println(s"postgres ${if (strict) "strict" else "not-strict"} seed: ${seed} target: ${tableName}")
+        println(s"batch postgres ${if (strict) "strict" else "not-strict"} seed: ${seed} target: ${tableName}")
 
         ai.tripl.arc.execute.JDBCExecuteStage.execute(
           ai.tripl.arc.execute.JDBCExecuteStage(
@@ -515,7 +533,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             sqlParams=Map.empty
           )
         )
-        customerInitial.write.mode("append").jdbc(databaseURL, tableName, new java.util.Properties)
+        customersInitial.write.mode("append").jdbc(databaseURL, tableName, new java.util.Properties)
         ai.tripl.arc.execute.JDBCExecuteStage.execute(
           ai.tripl.arc.execute.JDBCExecuteStage(
             plugin=new ai.tripl.arc.execute.JDBCExecute,
@@ -531,7 +549,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         )
 
         // make transactions
-        val (transactions, update, insert, delete) = makeTransactions(customerInitial, customerUpdates, tableName, seed)
+        val (transactions, update, insert, delete) = makeCustomerTransactions(customersInitial, customersUpdates, tableName, seed)
 
         TestHelpers.registerConnector(connectURI, makeConnectorConfig(s"inventory.${tableName}", "c_custkey"))
 
@@ -565,34 +583,36 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           var last = System.currentTimeMillis()
           var i = 0
           var deadlocks = 0
-          transactions.foreach { sql =>
-            if (System.currentTimeMillis() > last+1000) {
-              last = System.currentTimeMillis()
-              println(s"${i} transactions/sec (${deadlocks} deadlocks)")
-              i = 0
-            }
-            i += 1
-            breakable {
-              while(true){
-                try {
-                  ai.tripl.arc.execute.JDBCExecuteStage.execute(
-                    ai.tripl.arc.execute.JDBCExecuteStage(
-                      plugin=new ai.tripl.arc.execute.JDBCExecute,
-                      id=None,
-                      name="JDBCExecute",
-                      description=None,
-                      inputURI=new URI(databaseURL),
-                      jdbcURL=databaseURL,
-                      sql=sql,
-                      params=Map.empty,
-                      sqlParams=Map.empty
-                    )
-                  )
-                  break
-                } catch {
-                  case e: Exception if e.getMessage.contains("could not serialize access") => {
-                    deadlocks += 1
-                    Thread.sleep(100)
+          ControlUtils.using(DriverManager.getConnection(databaseURL, new java.util.Properties)) { connection =>
+            ControlUtils.using(connection.createStatement) { stmt =>
+              transactions.foreach { sql =>
+                if (System.currentTimeMillis() > last+1000) {
+                  last = System.currentTimeMillis()
+                  println(s"${i} transactions/sec (${deadlocks} deadlocks)")
+                  i = 0
+                }
+                i += 1
+                var retry = 0
+                breakable {
+                  while(true){
+                    if (retry == 100) {
+                      throw new Exception("could not complete transaction due to deadlocks")
+                      break
+                    }
+                    try {
+                        val res = stmt.execute(sql)
+                        // try to get results to throw error if one exists
+                        if (res) {
+                          stmt.getResultSet.next
+                        }
+                      break
+                    } catch {
+                      case e: Exception if e.getMessage.contains("Deadlock found") => {
+                        retry += 1
+                        deadlocks += 1
+                        Thread.sleep(200)
+                      }
+                    }
                   }
                 }
               }
@@ -618,7 +638,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             .toList
 
           // make sure the updates have happened
-          assert(read.size > customerInitial.count)
+          assert(read.size > customersInitial.count)
 
           // recursively apply the records passing in the previous state
           val batches = 3
@@ -695,6 +715,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         }
       }
     }
+    customersInitial.unpersist
   }
 
 }
