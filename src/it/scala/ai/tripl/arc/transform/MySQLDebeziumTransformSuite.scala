@@ -799,7 +799,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
 
     println()
     for (seed <- 0 to 0) {
-      for (strict <- Seq(true, false)) {
+      for (strict <- Seq(true)) {
         FileUtils.deleteQuietly(new java.io.File(checkpointLocation))
         val uuid = UUID.randomUUID.toString.replaceAll("-","")
         val customersTableName = s"customers_${uuid}"
