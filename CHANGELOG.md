@@ -1,5 +1,9 @@
 # Change Log
 
+## 1.1.3
+
+- **FIX** allow timestamp for MySQL to support millisecond timestamps.
+
 ## 1.1.2
 
 - **FIX** ensure schema metadata is set to be consistent with other Arc `*Extract` stages.

@@ -321,7 +321,7 @@ object DebeziumTransformStage {
                   connector match {
                     case CONNECTOR_MONGODB => new Timestamp(Instant.parse(v.asInstanceOf[Map[String,String]].get("$date").get).toEpochMilli)
                     case CONNECTOR_POSTGRESQL => new Timestamp(v.asInstanceOf[Long]/1000L)
-                    case _ => new Timestamp(Instant.parse(v.asInstanceOf[String]).toEpochMilli)
+                    case _ => new Timestamp(Try(v.asInstanceOf[Long]).getOrElse(Instant.parse(v.asInstanceOf[String]).toEpochMilli))
                   }
                 }
                 case None => if (field.nullable) null else if (placeholders) new Timestamp(0) else throw new Exception(s"missing value for non-nullable field '${field.name}'")
