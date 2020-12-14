@@ -48,17 +48,17 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
 
   before {
     implicit val spark = SparkSession
-                  .builder()
-                  .master("local[*]")
-                  .config("spark.ui.port", "4040")
-                  .config("spark.checkpoint.compress", "true")
-                  .config("spark.sql.shuffle.partitions", 4)
-                  .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-                  .config("spark.kryoserializer.buffer.max", "2047m")
-                  .config("spark.sql.streaming.checkpointLocation", checkpointLocation)
-                  .config("spark.sql.streaming.forceDeleteTempCheckpointLocation", "true")
-                  .appName("Arc Test")
-                  .getOrCreate()
+      .builder()
+      .master("local[*]")
+      .config("spark.ui.port", "4040")
+      .config("spark.checkpoint.compress", "true")
+      .config("spark.sql.shuffle.partitions", 4)
+      .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+      .config("spark.kryoserializer.buffer.max", "2047m")
+      .config("spark.sql.streaming.checkpointLocation", checkpointLocation)
+      .config("spark.sql.streaming.forceDeleteTempCheckpointLocation", "true")
+      .appName("Arc Test")
+      .getOrCreate()
     spark.sparkContext.setLogLevel("INFO")
     implicit val logger = TestUtils.getLogger()
 
@@ -105,7 +105,9 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     |    "database.history.kafka.bootstrap.servers": "${kafkaBootstrap}",
     |    "database.history.kafka.topic": "schema-changes.inventory",
     |    "message.key.columns": "${tables}",
-    |    "decimal.handling.mode": "string"
+    |    "decimal.handling.mode": "string",
+    |    "include.query": false,
+    |    "enable.time.adjuster": true
     |  }
     |}""".stripMargin
   }
@@ -436,7 +438,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
               params=Map.empty
             )
           ).get
-          assert(TestUtils.datasetEquality(expected, spark.table(tableName)))
+          assert(TestUtils.datasetEquality(expected, spark.table(tableName).drop("_topic").drop("_offset")))
           println("PASS\n")
 
         } catch {
@@ -542,7 +544,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
       writeStream.stop
 
       // validate results
-      assert(TestUtils.datasetEquality(knownData, spark.table(tableName)))
+      assert(TestUtils.datasetEquality(knownData, spark.table(tableName).drop("_topic").drop("_offset")))
     } catch {
       case e: Exception => fail(e.getMessage)
     } finally {
@@ -753,7 +755,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
               params=Map.empty
             )
           ).get
-          assert(TestUtils.datasetEquality(expected, spark.table(outputView)))
+          assert(TestUtils.datasetEquality(expected, spark.table(outputView).drop("_topic").drop("_offset")))
           println(s"PASS: expected: ${expected.count} actual: ${spark.table(outputView).count}\n")
 
         } catch {
@@ -1022,6 +1024,8 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             )
           )
 
+          spark.table("customersOutputView").drop("_topic").drop("_offset").createOrReplaceTempView("customersOutputView")
+
           // read in batch mode
           spark
             .read
@@ -1054,6 +1058,8 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
               partitionBy=List.empty,
             )
           )
+
+          spark.table("ordersOutputView").drop("_topic").drop("_offset").createOrReplaceTempView("ordersOutputView")
 
           transform.SQLTransformStage.execute(
             transform.SQLTransformStage(

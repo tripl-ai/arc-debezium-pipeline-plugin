@@ -1,8 +1,13 @@
 # Change Log
 
+## 1.2.0
+
+- add `_topic` and `_offset` values to output schema.
+- **FIX** allow `boolean` stored as integer to be parsed.
+
 ## 1.1.3
 
-- **FIX** allow timestamp for MySQL to support millisecond timestamps.
+- **FIX** allow `timestamp` for MySQL to support millisecond timestamps.
 
 ## 1.1.2
 

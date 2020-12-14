@@ -58,23 +58,26 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
   |    "mongodb.password" : "dbz",
   |    "database.whitelist": "inventory",
   |    "database.history.kafka.bootstrap.servers": "${kafkaBootstrap}",
-  |    "database.history.kafka.topic": "schema-changes.inventory"
+  |    "database.history.kafka.topic": "schema-changes.inventory",
+  |    "decimal.handling.mode": "string",
+  |    "include.query": false,
+  |    "enable.time.adjuster": true
   |  }
   |}""".stripMargin
 
   before {
     implicit val spark = SparkSession
-                  .builder()
-                  .master("local[*]")
-                  .config("spark.ui.port", "4040")
-                  .config("spark.checkpoint.compress", "true")
-                  .config("spark.sql.shuffle.partitions", 4)
-                  .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-                  .config("spark.kryoserializer.buffer.max", "2047m")
-                  .config("spark.sql.streaming.checkpointLocation", checkpointLocation)
-                  .config("spark.sql.streaming.forceDeleteTempCheckpointLocation", "true")
-                  .appName("Arc Test")
-                  .getOrCreate()
+      .builder()
+      .master("local[*]")
+      .config("spark.ui.port", "4040")
+      .config("spark.checkpoint.compress", "true")
+      .config("spark.sql.shuffle.partitions", 4)
+      .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+      .config("spark.kryoserializer.buffer.max", "2047m")
+      .config("spark.sql.streaming.checkpointLocation", checkpointLocation)
+      .config("spark.sql.streaming.forceDeleteTempCheckpointLocation", "true")
+      .appName("Arc Test")
+      .getOrCreate()
     spark.sparkContext.setLogLevel("INFO")
     implicit val logger = TestUtils.getLogger()
 
@@ -352,7 +355,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           val expected = spark.read.format("com.mongodb.spark.sql").options(WriteConfig(Map("uri" -> mongoClientURI, "collection" -> tableName)).asOptions).load
           expected.cache
           assert(expected.count > customersInitial.count)
-          assert(TestUtils.datasetEquality(expected, spark.table(tableName)))
+          assert(TestUtils.datasetEquality(expected, spark.table(tableName).drop("_topic").drop("_offset")))
           println("PASS\n")
 
         } catch {
@@ -432,7 +435,7 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
       writeStream.stop
 
       // validate results
-      assert(TestUtils.datasetEquality(knownData, spark.table(tableName)))
+      assert(TestUtils.datasetEquality(knownData, spark.table(tableName).drop("_topic").drop("_offset")))
     } catch {
       case e: Exception => fail(e.getMessage)
     } finally {
