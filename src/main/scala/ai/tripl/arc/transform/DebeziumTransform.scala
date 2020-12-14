@@ -228,7 +228,13 @@ object DebeziumTransformStage {
     }
     stage.stageDetail.put("columns", cols.map(_.name).asJava)
 
-    val schema = Extract.toStructType(cols)
+    val extractSchema = Extract.toStructType(cols)
+    val schema = StructType(extractSchema.fields.toSeq ++
+      Seq(
+        StructField("_topic", StringType, false, new MetadataBuilder().putBoolean("internal", true).putString("description", "An Arc internal field describing where this row was originally sourced from.").build()),
+        StructField("_offset", LongType, false, new MetadataBuilder().putBoolean("internal", true).putString("description", "An Arc internal field describing the offset in _topic this row was originally sourced from.").build())
+      )
+    )
     val caseSensitiveSchema = schema.fields.exists(field => field.name.toLowerCase != field.name )
     val eventSchema = StructType(
       Seq(
@@ -257,86 +263,119 @@ object DebeziumTransformStage {
     // rowFromStringObjectMap uses the supplied schema to try to read values from a Map[String,Object] produced by the ObjectMapper from a JSON string
     // connector is required to override some of the default behavior for different connectors
     // placeholder allows mongodb connector to return rows which respect field nullable rules - the keyMask will ignore those placeholder values in merge
-    def rowFromStringObjectMap(afterMap: Map[String,Object], connector: String, placeholders: Boolean): Row = {
+    def rowFromStringObjectMap(dataMap: Map[String,Object], connector: String, topic: String, offset: Long, placeholders: Boolean): Row = {
 
       // postgres does not support case sensitive column names
       val fields = if (caseSensitiveSchema && connector == CONNECTOR_POSTGRESQL) {
-        schema.fields.map { field => StructField(field.name.toLowerCase, field.dataType, field.nullable) }
+        schema.fields.map { field => StructField(field.name.toLowerCase, field.dataType, field.nullable) }.toSeq
       } else {
-        schema.fields
+        schema.fields.toSeq
       }
 
       Row.fromSeq(
+
         fields.map { field =>
-          field.dataType match {
-            case BooleanType => {
-              afterMap.get(field.name) match {
-                case Some(v) => Try(v.asInstanceOf[Boolean]).getOrElse(v.asInstanceOf[String].toBoolean)
-                case None => if (field.nullable) null else if (placeholders) false else throw new Exception(s"missing value for non-nullable field '${field.name}'")
-              }
-            }
-            case DateType => {
-              afterMap.get(field.name) match {
-                case Some(v) => {
-                  connector match {
-                    case CONNECTOR_MONGODB => new Date(Instant.parse(v.asInstanceOf[Map[String,String]].get("$date").get).toEpochMilli)
-                    case _ => new Date(v.asInstanceOf[Int].toLong * 86400000L)
+          if (field.name == "_topic") {
+            topic
+          } else if (field.name == "_offset") {
+            offset
+          } else {
+            field.dataType match {
+              case BooleanType => {
+                dataMap.get(field.name) match {
+                  case Some(v) => {
+                    v match {
+                      case b: java.lang.Boolean => b
+                      case i: java.lang.Integer => i != 0
+                      case s: String => s.toBoolean
+                    }
                   }
+                  case None => if (field.nullable) null else if (placeholders) false else throw new Exception(s"missing value for non-nullable field '${field.name}'")
                 }
-                case None => if (field.nullable) null else if (placeholders) new Date(0) else throw new Exception(s"missing value for non-nullable field '${field.name}'")
               }
-            }
-            case DecimalType() => {
-              afterMap.get(field.name) match {
-                case Some(v) => {
-                  connector match {
-                    case CONNECTOR_MONGODB => Decimal(v.asInstanceOf[Map[String,String]].get("$numberDecimal").get)
-                    case _ => Decimal(v.asInstanceOf[String])
+              case DateType => {
+                dataMap.get(field.name) match {
+                  case Some(v) => {
+                    v match {
+                      case i: java.lang.Integer => new Date(i.toLong * 86400000L)
+                      case m: Map[_,_] => new Date(Instant.parse(v.asInstanceOf[Map[String,String]].get("$date").get).toEpochMilli)
+                    }
                   }
+                  case None => if (field.nullable) null else if (placeholders) new Date(0) else throw new Exception(s"missing value for non-nullable field '${field.name}'")
                 }
-                case None => if (field.nullable) null else if (placeholders) Decimal("0") else throw new Exception(s"missing value for non-nullable field '${field.name}'")
               }
-            }
-            case DoubleType => {
-              afterMap.get(field.name) match {
-                case Some(v) => Try(v.asInstanceOf[Double]).getOrElse(v.asInstanceOf[String].toDouble)
-                case None => if (field.nullable) null else if (placeholders) 0 else throw new Exception(s"missing value for non-nullable field '${field.name}'")
-              }
-            }
-            case IntegerType => {
-              afterMap.get(field.name) match {
-                case Some(v) => Try(v.asInstanceOf[Int]).getOrElse(v.asInstanceOf[String].toInt)
-                case None => if (field.nullable) null else if (placeholders) 0 else throw new Exception(s"missing value for non-nullable field '${field.name}'")
-              }
-            }
-            case LongType => {
-              afterMap.get(field.name) match {
-                case Some(v) => Try(Try(v.asInstanceOf[Long]).getOrElse(v.asInstanceOf[Int].toLong)).getOrElse(v.asInstanceOf[String].toLong)
-                case None => if (field.nullable) null else if (placeholders) 0L else throw new Exception(s"missing value for non-nullable field '${field.name}'")
-              }
-            }
-            case TimestampType => {
-              afterMap.get(field.name) match {
-                case Some(v) => {
-                  connector match {
-                    case CONNECTOR_MONGODB => new Timestamp(Instant.parse(v.asInstanceOf[Map[String,String]].get("$date").get).toEpochMilli)
-                    case CONNECTOR_POSTGRESQL => new Timestamp(v.asInstanceOf[Long]/1000L)
-                    case _ => new Timestamp(Try(v.asInstanceOf[Long]).getOrElse(Instant.parse(v.asInstanceOf[String]).toEpochMilli))
+              case DecimalType() => {
+                dataMap.get(field.name) match {
+                  case Some(v) => {
+                    v match {
+                      case s: String => Decimal(v.asInstanceOf[String])
+                      case m: Map[_,_] => Decimal(v.asInstanceOf[Map[String,String]].get("$numberDecimal").get)
+                    }
                   }
+                  case None => if (field.nullable) null else if (placeholders) Decimal("0") else throw new Exception(s"missing value for non-nullable field '${field.name}'")
                 }
-                case None => if (field.nullable) null else if (placeholders) new Timestamp(0) else throw new Exception(s"missing value for non-nullable field '${field.name}'")
               }
-            }
-            case StringType => {
-              afterMap.get(field.name) match {
-                case Some(v) => v.asInstanceOf[String]
-                case None => if (field.nullable) null else if (placeholders) "" else throw new Exception(s"missing value for non-nullable field '${field.name}'")
+              case DoubleType => {
+                dataMap.get(field.name) match {
+                  case Some(v) => {
+                    v match {
+                      case d: java.lang.Double => d
+                      case s: String => s.toDouble
+                    }
+                  }
+                  case None => if (field.nullable) null else if (placeholders) 0 else throw new Exception(s"missing value for non-nullable field '${field.name}'")
+                }
               }
+              case IntegerType => {
+                dataMap.get(field.name) match {
+                  case Some(v) => {
+                    v match {
+                      case i: java.lang.Integer => i
+                      case s: String => s.toInt
+                    }
+                  }
+                  case None => if (field.nullable) null else if (placeholders) 0 else throw new Exception(s"missing value for non-nullable field '${field.name}'")
+                }
+              }
+              case LongType => {
+                dataMap.get(field.name) match {
+                  case Some(v) => {
+                    v match {
+                      case l: java.lang.Long => l
+                      case i: java.lang.Integer => i.toLong
+                      case s: String => s.toLong
+                    }
+                  }
+                  case None => if (field.nullable) null else if (placeholders) 0L else throw new Exception(s"missing value for non-nullable field '${field.name}'")
+                }
+              }
+              case TimestampType => {
+                dataMap.get(field.name) match {
+                  case Some(v) => {
+                    v match {
+                      case l: java.lang.Long => new Timestamp(l/1000L)
+                      case s: String => new Timestamp(Instant.parse(s).toEpochMilli)
+                      case m: Map[_,_] => new Timestamp(Instant.parse(m.asInstanceOf[Map[String,String]].get("$date").get).toEpochMilli)
+                    }
+                  }
+                  case None => if (field.nullable) null else if (placeholders) new Timestamp(0) else throw new Exception(s"missing value for non-nullable field '${field.name}'")
+                }
+              }
+              case StringType => {
+                dataMap.get(field.name) match {
+                  case Some(v) => {
+                    v match {
+                      case s: String => s
+                    }
+                  }
+                  case None => if (field.nullable) null else if (placeholders) "" else throw new Exception(s"missing value for non-nullable field '${field.name}'")
+                }
+              }
+              case NullType => null
+              case _ => throw new Exception(s"unsupported type for field '${field.name}'")
             }
-            case NullType => null
-            case _ => throw new Exception(s"unsupported type for field '${field.name}'")
           }
-        }.toSeq
+        }
       )
     }
 
@@ -350,12 +389,12 @@ object DebeziumTransformStage {
           next.getString(EVENT_OPERATION_INDEX) match {
             case OPERATION_CREATE | OPERATION_READ => if (!previous.isNullAt(EVENT_AFTER_INDEX)) throw new Exception(s"expected previous value to be null for operation '${OPERATION_CREATE}'")
             case OPERATION_UPDATE => {
-              if (previous.isNullAt(EVENT_AFTER_INDEX) || next.isNullAt(EVENT_BEFORE_INDEX) || previous.getStruct(EVENT_AFTER_INDEX) != next.getStruct(EVENT_BEFORE_INDEX)) {
+              if (previous.isNullAt(EVENT_AFTER_INDEX) || next.isNullAt(EVENT_BEFORE_INDEX) || previous.getStruct(EVENT_AFTER_INDEX).toSeq.dropRight(1) != next.getStruct(EVENT_BEFORE_INDEX).toSeq.dropRight(1)) {
                 throw new Exception(s"expected previous value to equal next before value for operation '${OPERATION_UPDATE}'")
               }
             }
             case OPERATION_DELETE => {
-              if (previous.isNullAt(EVENT_AFTER_INDEX) || next.isNullAt(EVENT_BEFORE_INDEX) || previous.getStruct(EVENT_AFTER_INDEX) != next.getStruct(EVENT_BEFORE_INDEX)) {
+              if (previous.isNullAt(EVENT_AFTER_INDEX) || next.isNullAt(EVENT_BEFORE_INDEX) || previous.getStruct(EVENT_AFTER_INDEX).toSeq.dropRight(1) != next.getStruct(EVENT_BEFORE_INDEX).toSeq.dropRight(1)) {
                 throw new Exception(s"expected previous value to equal next before value for operation '${OPERATION_DELETE}'")
               }
             }
@@ -446,14 +485,14 @@ object DebeziumTransformStage {
                 if (!valuePayload.contains("before")) throw new Exception(s"invalid message format. missing 'value.payload.before' attribute. got ${valuePayload.keys.mkString("["," ,","]")}")
                 operation match {
                   case OPERATION_CREATE | OPERATION_READ => Try(valuePayload.get("before").get.asInstanceOf[scala.Null]).getOrElse(throw new Exception(s"invalid message format. expected 'value.payload.before' to be null for operation '${OPERATION_CREATE}'."))
-                  case OPERATION_UPDATE | OPERATION_DELETE => rowFromStringObjectMap(Try(valuePayload.get("before").get.asInstanceOf[Map[String,Object]]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.before' to be Object.")), connector, false)
+                  case OPERATION_UPDATE | OPERATION_DELETE => rowFromStringObjectMap(Try(valuePayload.get("before").get.asInstanceOf[Map[String,Object]]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.before' to be Object.")), connector, event.topic, event.offset, false)
                 }
               } else {
                 null
               }
               if (!valuePayload.contains("after")) throw new Exception(s"invalid message format. missing 'value.payload.after' attribute. got ${valuePayload.keys.mkString("["," ,","]")}")
               val after = operation match {
-                case OPERATION_CREATE | OPERATION_READ | OPERATION_UPDATE => rowFromStringObjectMap(Try(valuePayload.get("after").get.asInstanceOf[Map[String,Object]]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.after' to be Object.")), connector, false)
+                case OPERATION_CREATE | OPERATION_READ | OPERATION_UPDATE => rowFromStringObjectMap(Try(valuePayload.get("after").get.asInstanceOf[Map[String,Object]]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.after' to be Object.")), connector, event.topic, event.offset, false)
                 case OPERATION_DELETE => Try(valuePayload.get("after").get.asInstanceOf[scala.Null]).getOrElse(throw new Exception(s"invalid message format. expected 'value.payload.after' to be null for operation '${OPERATION_DELETE}'."))
               }
               (before, after, null)
@@ -467,7 +506,7 @@ object DebeziumTransformStage {
                 case OPERATION_CREATE | OPERATION_READ => {
                   val after = Try(valuePayload.get("after").get.asInstanceOf[String]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.after' to be String."))
                   val createDocument = BsonDocument.parse(StringEscapeUtils.unescapeJson(after))
-                  rowFromStringObjectMap(objectMapper.readValue(createDocument.toJson, classOf[Map[String,Object]]), connector, false)
+                  rowFromStringObjectMap(objectMapper.readValue(createDocument.toJson, classOf[Map[String,Object]]), connector, event.topic, event.offset, false)
                 }
                 case OPERATION_UPDATE => {
                   val patch = Try(valuePayload.get("patch").get.asInstanceOf[String]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.patch' to be String."))
@@ -500,7 +539,7 @@ object DebeziumTransformStage {
                     updateDocument.append("_id", new BsonString(id));
                   }
 
-                  rowFromStringObjectMap(objectMapper.readValue(updateDocument.toJson, classOf[Map[String,Object]]), connector, true)
+                  rowFromStringObjectMap(objectMapper.readValue(updateDocument.toJson, classOf[Map[String,Object]]), connector, event.topic, event.offset, true)
                 }
                 case OPERATION_DELETE => Try(valuePayload.get("after").get.asInstanceOf[scala.Null]).getOrElse(throw new Exception(s"invalid message format. expected 'value.payload.after' to be null for operation '${OPERATION_DELETE}'."))
               }

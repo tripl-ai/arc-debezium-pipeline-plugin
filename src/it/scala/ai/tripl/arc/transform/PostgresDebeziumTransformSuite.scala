@@ -46,17 +46,17 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
 
   before {
     implicit val spark = SparkSession
-                  .builder()
-                  .master("local[*]")
-                  .config("spark.ui.port", "4040")
-                  .config("spark.checkpoint.compress", "true")
-                  .config("spark.sql.shuffle.partitions", 8)
-                  .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-                  .config("spark.kryoserializer.buffer.max", "2047m")
-                  .config("spark.sql.streaming.checkpointLocation", checkpointLocation)
-                  .config("spark.sql.streaming.forceDeleteTempCheckpointLocation", "true")
-                  .appName("Arc Test")
-                  .getOrCreate()
+      .builder()
+      .master("local[*]")
+      .config("spark.ui.port", "4040")
+      .config("spark.checkpoint.compress", "true")
+      .config("spark.sql.shuffle.partitions", 8)
+      .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+      .config("spark.kryoserializer.buffer.max", "2047m")
+      .config("spark.sql.streaming.checkpointLocation", checkpointLocation)
+      .config("spark.sql.streaming.forceDeleteTempCheckpointLocation", "true")
+      .appName("Arc Test")
+      .getOrCreate()
     spark.sparkContext.setLogLevel("INFO")
     implicit val logger = TestUtils.getLogger()
 
@@ -104,6 +104,8 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     |    "schema.include.list": "inventory",
     |    "message.key.columns": "${tableName}:${key}",
     |    "decimal.handling.mode": "string",
+    |    "include.query": false,
+    |    "enable.time.adjuster": true,
     |    "heartbeat.interval​.ms": 20,
     |    "slot.drop.on.stop": "true",
     |    "snapshot.mode": "always"
@@ -364,7 +366,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             )
           ).get
           assert(expected.count > customersInitial.count)
-          assert(TestUtils.datasetEquality(expected, spark.table(tableName)))
+          assert(TestUtils.datasetEquality(expected, spark.table(tableName).drop("_topic").drop("_offset")))
           println("PASS\n")
 
         } catch {
@@ -476,7 +478,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
       writeStream.stop
 
       // validate results
-      assert(TestUtils.datasetEquality(knownData, spark.table(tableName)))
+      assert(TestUtils.datasetEquality(knownData, spark.table(tableName).drop("_topic").drop("_offset")))
     } catch {
       case e: Exception => fail(e.getMessage)
     } finally {
@@ -690,7 +692,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
               params=Map.empty
             )
           ).get
-          assert(TestUtils.datasetEquality(expected, spark.table(outputView)))
+          assert(TestUtils.datasetEquality(expected, spark.table(outputView).drop("_topic").drop("_offset")))
           println(s"PASS: expected: ${expected.count} actual: ${spark.table(outputView).count}\n")
 
         } catch {
