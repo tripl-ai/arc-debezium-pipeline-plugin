@@ -15,6 +15,7 @@ import org.scalatest.BeforeAndAfter
 import org.apache.commons.io.FileUtils
 
 import org.apache.spark.sql._
+import org.apache.spark.sql.types._
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.streaming._
 import org.apache.spark.sql.streaming.StreamingQueryListener._
@@ -106,6 +107,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     |    "database.history.kafka.topic": "schema-changes.inventory",
     |    "message.key.columns": "${tables}",
     |    "decimal.handling.mode": "string",
+    |    "bigint.unsigned.handling.mode": "long",
     |    "include.query": false,
     |    "enable.time.adjuster": true
     |  }
@@ -302,7 +304,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             description=None,
             inputURI=new URI(databaseURL),
             jdbcURL=databaseURL,
-            sql=makeTransaction(Seq(s"CREATE TABLE ${tableName} (c_custkey INTEGER NOT NULL, c_name VARCHAR(25) NOT NULL, c_address VARCHAR(40) NOT NULL, c_nationkey INTEGER NOT NULL, c_phone VARCHAR(15) NOT NULL, c_acctbal DECIMAL(20,2) NOT NULL, c_mktsegment VARCHAR(10) NOT NULL, c_comment VARCHAR(117) NOT NULL);")),
+            sql=makeTransaction(Seq(s"CREATE TABLE ${tableName} (c_custkey BIGINT NOT NULL, c_name VARCHAR(25) NOT NULL, c_address VARCHAR(40) NOT NULL, c_nationkey INTEGER NOT NULL, c_phone VARCHAR(15) NOT NULL, c_acctbal DECIMAL(20,2) NOT NULL, c_mktsegment VARCHAR(10) NOT NULL, c_comment VARCHAR(117) NOT NULL);")),
             params=Map.empty,
             sqlParams=Map.empty
           )
@@ -365,7 +367,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           // wait for query to start
           val start = System.currentTimeMillis()
           while (writeStream.lastProgress == null || (writeStream.lastProgress != null && writeStream.lastProgress.numInputRows == 0)) {
-            if (System.currentTimeMillis() > start + 60000) throw new Exception("Timeout without messages arriving")
+            if (System.currentTimeMillis() > start + 30000) throw new Exception("Timeout without messages arriving")
             println("Waiting for query progress...")
             Thread.sleep(1000)
           }
@@ -472,10 +474,8 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     implicit val logger = TestUtils.getLogger()
     implicit val arcContext = TestUtils.getARCContext(isStreaming = true)
 
-    val knownData = TestUtils.getKnownDataset.drop("nullDatum")
-    val knownDataMetadata = MetadataUtils.createMetadataDataframe(knownData)
-    knownDataMetadata.persist
-    knownDataMetadata.createOrReplaceTempView(customersSchema)
+    val knownData = TestUtils.getKnownDatasetMySQL.drop("nullDatum")
+    val schema = ai.tripl.arc.util.ArcSchema.parseArcSchema(TestUtils.getKnownDatasetMetadataJsonMySQL)
 
     val tableName = s"customers_${UUID.randomUUID.toString.replaceAll("-","")}"
 
@@ -487,7 +487,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         description=None,
         inputURI=new URI(databaseURL),
         jdbcURL=databaseURL,
-        sql=makeTransaction(Seq(s"CREATE TABLE ${tableName} (booleanDatum BOOLEAN NOT NULL, dateDatum DATE NOT NULL, decimalDatum DECIMAL(10,3) NOT NULL, doubleDatum DOUBLE NOT NULL, integerDatum INTEGER NOT NULL, longDatum BIGINT NOT NULL, stringDatum VARCHAR(255) NOT NULL, timeDatum VARCHAR(255) NOT NULL, timestampDatum TIMESTAMP NOT NULL);")),
+        sql=makeTransaction(Seq(s"CREATE TABLE ${tableName} (booleanDatum BOOLEAN NOT NULL, dateDatum DATE NOT NULL, decimalDatum DECIMAL(10,3) NOT NULL, doubleDatum DOUBLE NOT NULL, integerDatum INTEGER NOT NULL, longDatum BIGINT NOT NULL, bigIntDatum BIGINT UNSIGNED NOT NULL, stringDatum VARCHAR(255) NOT NULL, timeDatum VARCHAR(255) NOT NULL, timestampDatum TIMESTAMP NOT NULL);")),
         params=Map.empty,
         sqlParams=Map.empty
       )
@@ -513,7 +513,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         description=None,
         inputView=inputView,
         outputView=outputView,
-        schema=Left(customersSchema),
+        schema=Right(schema.right.getOrElse(Nil)),
         strict=true,
         initialStateView=None,
         initialStateKey=None,
@@ -534,7 +534,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
       // wait for query to start
       val start = System.currentTimeMillis()
       while (writeStream.lastProgress == null || (writeStream.lastProgress != null && writeStream.lastProgress.numInputRows == 0)) {
-        if (System.currentTimeMillis() > start + 60000) throw new Exception("Timeout without messages arriving")
+        if (System.currentTimeMillis() > start + 30000) throw new Exception("Timeout without messages arriving")
         println("Waiting for query progress...")
         Thread.sleep(1000)
       }
@@ -544,7 +544,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
       writeStream.stop
 
       // validate results
-      assert(TestUtils.datasetEquality(knownData, spark.table(tableName).drop("_topic").drop("_offset")))
+      assert(TestUtils.datasetEquality(knownData.withColumn("bigIntDatum", col("bigIntDatum").cast(DecimalType(38,0))), spark.table(tableName).drop("_topic").drop("_offset")))
     } catch {
       case e: Exception => fail(e.getMessage)
     } finally {
@@ -637,7 +637,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           // wait for query to start
           val start = System.currentTimeMillis()
           while (writeStream.lastProgress == null || (writeStream.lastProgress != null && writeStream.lastProgress.numInputRows == 0)) {
-            if (System.currentTimeMillis() > start + 60000) throw new Exception("Timeout without messages arriving")
+            if (System.currentTimeMillis() > start + 30000) throw new Exception("Timeout without messages arriving")
             println("Waiting for query progress...")
             Thread.sleep(1000)
           }
@@ -783,7 +783,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     customersInitial.unpersist
   }
 
-  test("MySQLDebeziumTransform: Streaming Join") {
+  test("MySQLDebeziumTransform: Join") {
     implicit val spark = session
     import spark.implicits._
     implicit val logger = TestUtils.getLogger()
@@ -907,7 +907,7 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
             (writeStream0.lastProgress == null || (writeStream0.lastProgress != null && writeStream0.lastProgress.numInputRows == 0)) &&
             (writeStream1.lastProgress == null || (writeStream1.lastProgress != null && writeStream1.lastProgress.numInputRows == 0))
           ) {
-            if (System.currentTimeMillis() > start + 60000) throw new Exception("Timeout without messages arriving")
+            if (System.currentTimeMillis() > start + 30000) throw new Exception("Timeout without messages arriving")
             println("Waiting for query progress...")
             Thread.sleep(1000)
           }

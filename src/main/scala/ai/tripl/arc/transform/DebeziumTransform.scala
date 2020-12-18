@@ -1,13 +1,19 @@
 package ai.tripl.arc.transform
 
 import java.io._
+import java.math.BigDecimal
+import java.math.BigInteger
 import java.net.URI
-import java.util.Properties
-import java.sql.DriverManager
-import java.sql.Date
-import java.time.Instant
-import java.sql.Timestamp
 import java.nio.charset.StandardCharsets
+import java.sql.Date
+import java.sql.DriverManager
+import java.sql.Timestamp
+import java.sql.Timestamp
+import java.time.Instant
+import java.time.ZonedDateTime
+import java.time.ZoneId
+import java.util.Base64
+import java.util.Properties
 
 import scala.annotation.tailrec
 import scala.collection.JavaConverters._
@@ -228,13 +234,12 @@ object DebeziumTransformStage {
     }
     stage.stageDetail.put("columns", cols.map(_.name).asJava)
 
-    val extractSchema = Extract.toStructType(cols)
-    val schema = StructType(extractSchema.fields.toSeq ++
-      Seq(
-        StructField("_topic", StringType, false, new MetadataBuilder().putBoolean("internal", true).putString("description", "An Arc internal field describing where this row was originally sourced from.").build()),
-        StructField("_offset", LongType, false, new MetadataBuilder().putBoolean("internal", true).putString("description", "An Arc internal field describing the offset in _topic this row was originally sourced from.").build())
-      )
+    val enrichedCols = cols ++ List(
+      StringColumn(None, name="_topic", description=Some("An Arc internal field describing where this row was originally sourced from."), nullable=false, nullReplacementValue=None, trim=false, nullableValues="" :: Nil,  metadata=Some("""{"internal": true}"""), minLength=None, maxLength=None, regex=None),
+      LongColumn(None, name="_offset", description=Some("An Arc internal field describing the offset in _topic this row was originally sourced from."), nullable=false, nullReplacementValue=None, trim=false, nullableValues="" :: Nil,  metadata=Some("""{"internal": true}"""), formatters=None)
     )
+
+    val schema = Extract.toStructType(cols)
     val caseSensitiveSchema = schema.fields.exists(field => field.name.toLowerCase != field.name )
     val eventSchema = StructType(
       Seq(
@@ -263,115 +268,198 @@ object DebeziumTransformStage {
     // rowFromStringObjectMap uses the supplied schema to try to read values from a Map[String,Object] produced by the ObjectMapper from a JSON string
     // connector is required to override some of the default behavior for different connectors
     // placeholder allows mongodb connector to return rows which respect field nullable rules - the keyMask will ignore those placeholder values in merge
-    def rowFromStringObjectMap(dataMap: Map[String,Object], connector: String, topic: String, offset: Long, placeholders: Boolean): Row = {
+    def rowFromStringObjectMap(schemaList: List[Map[String,Object]], dataMap: Map[String,Object], connector: String, topic: String, offset: Long, placeholders: Boolean): Row = {
 
       // postgres does not support case sensitive column names
-      val fields = if (caseSensitiveSchema && connector == CONNECTOR_POSTGRESQL) {
-        schema.fields.map { field => StructField(field.name.toLowerCase, field.dataType, field.nullable) }.toSeq
-      } else {
-        schema.fields.toSeq
+      def casedFieldName(name: String): String = {
+        if (caseSensitiveSchema && connector == CONNECTOR_POSTGRESQL) name.toLowerCase else name
       }
 
       Row.fromSeq(
-
-        fields.map { field =>
+        enrichedCols.map { field =>
           if (field.name == "_topic") {
             topic
           } else if (field.name == "_offset") {
             offset
           } else {
-            field.dataType match {
-              case BooleanType => {
-                dataMap.get(field.name) match {
+            val schemaField = connector match {
+              case CONNECTOR_MONGODB => Map.empty[String,String]
+              case CONNECTOR_POSTGRESQL if (caseSensitiveSchema) => Try(schemaList.filter { schemaField => schemaField.get("field") == Some(field.name.toLowerCase) }.head).getOrElse(throw new Exception(s"missing schema for field '${field.name}'"))
+              case _ => Try(schemaList.filter { schemaField => schemaField.get("field") == Some(field.name) }.head).getOrElse(throw new Exception(s"missing schema for field '${field.name}'"))
+            }
+            val fieldType = connector match {
+              case CONNECTOR_MONGODB => ""
+              case _ => Try(schemaField.get("type").get.asInstanceOf[String]).getOrElse(throw new Exception(s"expected 'type' schema for field '${field.name}' to be String."))
+            }
+            val fieldTypeName = connector match {
+              case CONNECTOR_MONGODB => ""
+              case _ => Try(schemaField.get("name").map(_.asInstanceOf[String])).getOrElse(throw new Exception(s"expected 'name' schema for field '${field.name}' to be String."))
+            }
+
+            field match {
+              case _: BooleanColumn => {
+                dataMap.get(casedFieldName(field.name)) match {
                   case Some(v) => {
                     v match {
                       case b: java.lang.Boolean => b
                       case i: java.lang.Integer => i != 0
                       case s: String => s.toBoolean
+                      case n if n == null => if (field.nullable) null else if (placeholders) "" else throw new Exception(s"missing value for non-nullable field '${field.name}'")
+                      case _ => throw new Exception(s"'${v.getClass.getName}' does not match expected data type '${field.sparkDataType.simpleString}' for field '${field.name}'.")
                     }
                   }
                   case None => if (field.nullable) null else if (placeholders) false else throw new Exception(s"missing value for non-nullable field '${field.name}'")
                 }
               }
-              case DateType => {
-                dataMap.get(field.name) match {
+              case  _: DateColumn => {
+                dataMap.get(casedFieldName(field.name)) match {
                   case Some(v) => {
                     v match {
                       case i: java.lang.Integer => new Date(i.toLong * 86400000L)
+                      case l: java.lang.Long => new Date(l * 86400000L)
                       case m: Map[_,_] => new Date(Instant.parse(v.asInstanceOf[Map[String,String]].get("$date").get).toEpochMilli)
+                      case n if n == null => if (field.nullable) null else if (placeholders) "" else throw new Exception(s"missing value for non-nullable field '${field.name}'")
+                      case _ => throw new Exception(s"'${v.getClass.getName}' does not match expected data type '${field.sparkDataType.simpleString}' for field '${field.name}'.")
                     }
                   }
                   case None => if (field.nullable) null else if (placeholders) new Date(0) else throw new Exception(s"missing value for non-nullable field '${field.name}'")
                 }
               }
-              case DecimalType() => {
-                dataMap.get(field.name) match {
+              case  _: DecimalColumn => {
+                dataMap.get(casedFieldName(field.name)) match {
                   case Some(v) => {
                     v match {
-                      case s: String => Decimal(v.asInstanceOf[String])
+                      case s: String => {
+                        fieldType match {
+                          case "bytes" => {
+                            val parametersMap = Try(schemaField.get("parameters").get.asInstanceOf[Map[String,String]]).getOrElse(throw new Exception(s"expected 'parameters' schema for field '${field.name}' of type 'bytes' to be Map[String, String]."))
+                            val scale = Try(parametersMap.get("scale").get.toInt).getOrElse(0)
+                            val precision = Try(parametersMap.get("connect.decimal.precision").get.toInt).getOrElse(38)
+                            val bytes = Base64.getDecoder().decode(v.asInstanceOf[String])
+                            val bigDecimal = scala.math.BigDecimal(new BigInteger(bytes))
+                            Decimal(bigDecimal / scala.math.pow(10, scale), precision, scale)
+                          }
+                          case "string" => Decimal(v.asInstanceOf[String])
+                          case _ => throw new Exception(s"expected source data type as one of ['bytes', 'string'] for field '${field.name}' of type Decimal")
+                        }
+                      }
                       case m: Map[_,_] => Decimal(v.asInstanceOf[Map[String,String]].get("$numberDecimal").get)
+                      case n if n == null => if (field.nullable) null else if (placeholders) "" else throw new Exception(s"missing value for non-nullable field '${field.name}'")
+                      case _ => throw new Exception(s"'${v.getClass.getName}' does not match expected data type '${field.sparkDataType.simpleString}' for field '${field.name}'.")
                     }
                   }
                   case None => if (field.nullable) null else if (placeholders) Decimal("0") else throw new Exception(s"missing value for non-nullable field '${field.name}'")
                 }
               }
-              case DoubleType => {
-                dataMap.get(field.name) match {
+              case  _: DoubleColumn => {
+                dataMap.get(casedFieldName(field.name)) match {
                   case Some(v) => {
                     v match {
                       case d: java.lang.Double => d
+                      case f: java.lang.Float => f.toDouble
                       case s: String => s.toDouble
+                      case n if n == null => if (field.nullable) null else if (placeholders) "" else throw new Exception(s"missing value for non-nullable field '${field.name}'")
+                      case _ => throw new Exception(s"'${v.getClass.getName}' does not match expected data type '${field.sparkDataType.simpleString}' for field '${field.name}'.")
                     }
                   }
                   case None => if (field.nullable) null else if (placeholders) 0 else throw new Exception(s"missing value for non-nullable field '${field.name}'")
                 }
               }
-              case IntegerType => {
-                dataMap.get(field.name) match {
+              case  _: IntegerColumn => {
+                dataMap.get(casedFieldName(field.name)) match {
                   case Some(v) => {
                     v match {
                       case i: java.lang.Integer => i
+                      case l: java.lang.Long => l.toInt
                       case s: String => s.toInt
+                      case n if n == null => if (field.nullable) null else if (placeholders) "" else throw new Exception(s"missing value for non-nullable field '${field.name}'")
+                      case _ => throw new Exception(s"'${v.getClass.getName}' does not match expected data type '${field.sparkDataType.simpleString}' for field '${field.name}'.")
                     }
                   }
                   case None => if (field.nullable) null else if (placeholders) 0 else throw new Exception(s"missing value for non-nullable field '${field.name}'")
                 }
               }
-              case LongType => {
-                dataMap.get(field.name) match {
+              case  _: LongColumn => {
+                dataMap.get(casedFieldName(field.name)) match {
                   case Some(v) => {
                     v match {
                       case l: java.lang.Long => l
                       case i: java.lang.Integer => i.toLong
                       case s: String => s.toLong
+                      case n if n == null => if (field.nullable) null else if (placeholders) "" else throw new Exception(s"missing value for non-nullable field '${field.name}'")
+                      case _ => throw new Exception(s"'${v.getClass.getName}' does not match expected data type '${field.sparkDataType.simpleString}' for field '${field.name}'.")
                     }
                   }
                   case None => if (field.nullable) null else if (placeholders) 0L else throw new Exception(s"missing value for non-nullable field '${field.name}'")
                 }
               }
-              case TimestampType => {
-                dataMap.get(field.name) match {
+              case t: TimestampColumn => {
+                dataMap.get(casedFieldName(field.name)) match {
                   case Some(v) => {
-                    v match {
-                      case l: java.lang.Long => new Timestamp(l/1000L)
-                      case s: String => new Timestamp(Instant.parse(s).toEpochMilli)
-                      case m: Map[_,_] => new Timestamp(Instant.parse(m.asInstanceOf[Map[String,String]].get("$date").get).toEpochMilli)
+
+                    connector match {
+                      case CONNECTOR_MONGODB => {
+                        v match {
+                          case m: Map[_,_] => new Timestamp(Instant.parse(m.asInstanceOf[Map[String,String]].get("$date").get).toEpochMilli)
+                          case n if n == null => if (field.nullable) null else if (placeholders) "" else throw new Exception(s"missing value for non-nullable field '${field.name}'")
+                          case _ => throw new Exception(s"'${v.getClass.getName}' does not match expected data type '${field.sparkDataType.simpleString}' for field '${field.name}'.")
+                        }
+                      }
+                      case _ => {
+                        v match {
+                          case l: java.lang.Long => {
+                            fieldTypeName match {
+                              case Some("io.debezium.time.Timestamp") => new Timestamp(ZonedDateTime.of(1970, 1, 1, 0, 0, 0, 0, ZoneId.of(t.timezoneId)).plusNanos(l*1000000).toInstant.toEpochMilli)
+                              case Some("io.debezium.time.MicroTimestamp") => new Timestamp(l/1000)
+                              case Some("io.debezium.time.ZonedTimestamp") => new Timestamp(l/1000)
+                              case None => throw new Exception(s"expected 'name' schema for field '${field.name}' to be String but was not provided.")
+                            }
+                          }
+                          case i: java.lang.Integer => {
+                            fieldTypeName match {
+                              case Some("io.debezium.time.Timestamp") => new Timestamp(ZonedDateTime.of(1970, 1, 1, 0, 0, 0, 0, ZoneId.of(t.timezoneId)).plusNanos(i.toLong*1000000).toInstant.toEpochMilli)
+                              case Some("io.debezium.time.MicroTimestamp") => new Timestamp(i.toLong/1000)
+                              case Some("io.debezium.time.ZonedTimestamp") => new Timestamp(i.toLong/1000)
+                              case None => throw new Exception(s"expected 'name' schema for field '${field.name}' to be String but was not provided.")
+                              case _ =>
+                            }
+                          }
+                          case s: String => new Timestamp(Instant.parse(s).toEpochMilli)
+                          case n if n == null => if (field.nullable) null else if (placeholders) "" else throw new Exception(s"missing value for non-nullable field '${field.name}'")
+                          case _ => throw new Exception(s"'${v.getClass.getName}' does not match expected data type '${field.sparkDataType.simpleString}' for field '${field.name}'.")
+                        }
+                      }
                     }
+
+
                   }
                   case None => if (field.nullable) null else if (placeholders) new Timestamp(0) else throw new Exception(s"missing value for non-nullable field '${field.name}'")
                 }
               }
-              case StringType => {
-                dataMap.get(field.name) match {
+              case  _: StringColumn  => {
+                dataMap.get(casedFieldName(field.name)) match {
                   case Some(v) => {
                     v match {
                       case s: String => s
+                      case n if n == null => if (field.nullable) null else if (placeholders) "" else throw new Exception(s"missing value for non-nullable field '${field.name}'")
+                      case _ => throw new Exception(s"'${v.getClass.getName}' does not match expected data type '${field.sparkDataType.simpleString}' for field '${field.name}'.")
                     }
                   }
                   case None => if (field.nullable) null else if (placeholders) "" else throw new Exception(s"missing value for non-nullable field '${field.name}'")
                 }
               }
-              case NullType => null
+              case  _: TimeColumn  => {
+                dataMap.get(casedFieldName(field.name)) match {
+                  case Some(v) => {
+                    v match {
+                      case s: String => s
+                      case n if n == null => if (field.nullable) null else if (placeholders) "" else throw new Exception(s"missing value for non-nullable field '${field.name}'")
+                      case _ => throw new Exception(s"'${v.getClass.getName}' does not match expected data type '${field.sparkDataType.simpleString}' for field '${field.name}'.")
+                    }
+                  }
+                  case None => if (field.nullable) null else if (placeholders) "" else throw new Exception(s"missing value for non-nullable field '${field.name}'")
+                }
+              }
               case _ => throw new Exception(s"unsupported type for field '${field.name}'")
             }
           }
@@ -463,9 +551,6 @@ object DebeziumTransformStage {
           if (!valueMap.contains("payload")) throw new Exception(s"invalid message format. missing 'value.payload' attribute. got ${valueMap.keys.mkString("["," ,","]")}")
           val valuePayload = valueMap.get("payload").getOrElse(throw new Exception("invalid message format. expected 'value.payload' to be Object."))
 
-          if (!valuePayload.contains("op")) throw new Exception(s"invalid message format. missing 'value.payload.op' attribute. got ${valuePayload.keys.mkString("["," ,","]")}")
-          val operation = Try(valuePayload.get("op").get.asInstanceOf[String]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.op' to be String."))
-
           val connector = memoizedConnector.getOrElse {
             if (!valuePayload.contains("source")) throw new Exception(s"invalid message format. missing 'value.payload.source' attribute. got ${valuePayload.keys.mkString("["," ,","]")}")
             val source = Try(valuePayload.get("source").get.asInstanceOf[Map[String,Object]]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.source' to be Object."))
@@ -479,20 +564,29 @@ object DebeziumTransformStage {
             memoizedConnector.get
           }
 
+          if (!valueMap.contains("schema")) throw new Exception(s"invalid message format. missing 'value.schema' attribute. got ${valueMap.keys.mkString("["," ,","]")}")
+          val schemaPayload = valueMap.get("schema").getOrElse(throw new Exception("invalid message format. expected 'value.schema' to be Object."))
+          val fields = Try(schemaPayload.get("fields").get.asInstanceOf[List[Map[String,Object]]]).getOrElse(throw new Exception("invalid message format. expected 'value.schema.fields' to be Array."))
+          val afterFields = if (connector == CONNECTOR_MONGODB) List.empty else Try(fields.filter { fieldMap => fieldMap.get("field") == Some("after") }.head.get("fields").get.asInstanceOf[List[Map[String, Object]]]).getOrElse(throw new Exception("invalid message format. expected 'value.schema.fields.after' to be Array."))
+
+          if (!valuePayload.contains("op")) throw new Exception(s"invalid message format. missing 'value.payload.op' attribute. got ${valuePayload.keys.mkString("["," ,","]")}")
+          val operation = Try(valuePayload.get("op").get.asInstanceOf[String]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.op' to be String."))
+
           val (before, after, keyMask) = connector match {
             case CONNECTOR_MYSQL | CONNECTOR_POSTGRESQL => {
               val before = if (stage.strict) {
                 if (!valuePayload.contains("before")) throw new Exception(s"invalid message format. missing 'value.payload.before' attribute. got ${valuePayload.keys.mkString("["," ,","]")}")
+                val beforeFields = Try(fields.filter { fieldMap => fieldMap.get("field") == Some("before") }.head.get("fields").get.asInstanceOf[List[Map[String, Object]]]).getOrElse(throw new Exception("invalid message format. expected 'value.schema.fields.before' to be Array."))
                 operation match {
                   case OPERATION_CREATE | OPERATION_READ => Try(valuePayload.get("before").get.asInstanceOf[scala.Null]).getOrElse(throw new Exception(s"invalid message format. expected 'value.payload.before' to be null for operation '${OPERATION_CREATE}'."))
-                  case OPERATION_UPDATE | OPERATION_DELETE => rowFromStringObjectMap(Try(valuePayload.get("before").get.asInstanceOf[Map[String,Object]]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.before' to be Object.")), connector, event.topic, event.offset, false)
+                  case OPERATION_UPDATE | OPERATION_DELETE => rowFromStringObjectMap(beforeFields, Try(valuePayload.get("before").get.asInstanceOf[Map[String,Object]]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.before' to be Object.")), connector, event.topic, event.offset, false)
                 }
               } else {
                 null
               }
               if (!valuePayload.contains("after")) throw new Exception(s"invalid message format. missing 'value.payload.after' attribute. got ${valuePayload.keys.mkString("["," ,","]")}")
               val after = operation match {
-                case OPERATION_CREATE | OPERATION_READ | OPERATION_UPDATE => rowFromStringObjectMap(Try(valuePayload.get("after").get.asInstanceOf[Map[String,Object]]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.after' to be Object.")), connector, event.topic, event.offset, false)
+                case OPERATION_CREATE | OPERATION_READ | OPERATION_UPDATE => rowFromStringObjectMap(afterFields, Try(valuePayload.get("after").get.asInstanceOf[Map[String,Object]]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.after' to be Object.")), connector, event.topic, event.offset, false)
                 case OPERATION_DELETE => Try(valuePayload.get("after").get.asInstanceOf[scala.Null]).getOrElse(throw new Exception(s"invalid message format. expected 'value.payload.after' to be null for operation '${OPERATION_DELETE}'."))
               }
               (before, after, null)
@@ -506,7 +600,7 @@ object DebeziumTransformStage {
                 case OPERATION_CREATE | OPERATION_READ => {
                   val after = Try(valuePayload.get("after").get.asInstanceOf[String]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.after' to be String."))
                   val createDocument = BsonDocument.parse(StringEscapeUtils.unescapeJson(after))
-                  rowFromStringObjectMap(objectMapper.readValue(createDocument.toJson, classOf[Map[String,Object]]), connector, event.topic, event.offset, false)
+                  rowFromStringObjectMap(afterFields, objectMapper.readValue(createDocument.toJson, classOf[Map[String,Object]]), connector, event.topic, event.offset, false)
                 }
                 case OPERATION_UPDATE => {
                   val patch = Try(valuePayload.get("patch").get.asInstanceOf[String]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.patch' to be String."))
@@ -539,7 +633,7 @@ object DebeziumTransformStage {
                     updateDocument.append("_id", new BsonString(id));
                   }
 
-                  rowFromStringObjectMap(objectMapper.readValue(updateDocument.toJson, classOf[Map[String,Object]]), connector, event.topic, event.offset, true)
+                  rowFromStringObjectMap(afterFields, objectMapper.readValue(updateDocument.toJson, classOf[Map[String,Object]]), connector, event.topic, event.offset, true)
                 }
                 case OPERATION_DELETE => Try(valuePayload.get("after").get.asInstanceOf[scala.Null]).getOrElse(throw new Exception(s"invalid message format. expected 'value.payload.after' to be null for operation '${OPERATION_DELETE}'."))
               }

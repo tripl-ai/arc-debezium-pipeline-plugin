@@ -292,7 +292,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           // wait for query to start
           val start = System.currentTimeMillis()
           while (writeStream.lastProgress == null || (writeStream.lastProgress != null && writeStream.lastProgress.numInputRows == 0)) {
-            if (System.currentTimeMillis() > start + 60000) throw new Exception("Timeout without messages arriving")
+            if (System.currentTimeMillis() > start + 30000) throw new Exception("Timeout without messages arriving")
             println("Waiting for query progress...")
             Thread.sleep(1000)
           }
@@ -401,9 +401,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
     implicit val arcContext = TestUtils.getARCContext(isStreaming = true)
 
     val knownData = TestUtils.getKnownDataset.drop("nullDatum")
-    val knownDataMetadata = MetadataUtils.createMetadataDataframe(knownData)
-    knownDataMetadata.persist
-    knownDataMetadata.createOrReplaceTempView(schema)
+    val schema = ai.tripl.arc.util.ArcSchema.parseArcSchema(TestUtils.getKnownDatasetMetadataJson)
 
     val tableName = s"customers_${UUID.randomUUID.toString.replaceAll("-","")}"
 
@@ -447,7 +445,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
         description=None,
         inputView=inputView,
         outputView=outputView,
-        schema=Left(schema),
+        schema=Right(schema.right.getOrElse(Nil)),
         strict=true,
         initialStateView=None,
         initialStateKey=None,
@@ -468,7 +466,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
       // wait for query to start
       val start = System.currentTimeMillis()
       while (writeStream.lastProgress == null || (writeStream.lastProgress != null && writeStream.lastProgress.numInputRows == 0)) {
-        if (System.currentTimeMillis() > start + 60000) throw new Exception("Timeout without messages arriving")
+        if (System.currentTimeMillis() > start + 30000) throw new Exception("Timeout without messages arriving")
         println("Waiting for query progress...")
         Thread.sleep(1000)
       }
@@ -575,7 +573,7 @@ class PostgresDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
           // wait for query to start
           val start = System.currentTimeMillis()
           while (writeStream.lastProgress == null || (writeStream.lastProgress != null && writeStream.lastProgress.numInputRows == 0)) {
-            if (System.currentTimeMillis() > start + 60000) throw new Exception("Timeout without messages arriving")
+            if (System.currentTimeMillis() > start + 30000) throw new Exception("Timeout without messages arriving")
             println("Waiting for query progress...")
             Thread.sleep(1000)
           }

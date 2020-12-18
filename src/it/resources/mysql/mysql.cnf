@@ -45,3 +45,5 @@ binlog_format     = row
 
 gtid_mode = on
 enforce_gtid_consistency = on
+
+default_time_zone=+01:00

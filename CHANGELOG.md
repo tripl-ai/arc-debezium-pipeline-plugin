@@ -1,5 +1,11 @@
 # Change Log
 
+## 1.3.0
+
+- **FIX** timezone handling for non specific types (i.e. MySQL `DATETIME`).
+- add ability to parse `precise` (i.e. `base64` encoded) decimal and bigint types.
+- better error messages on unexpected values.
+
 ## 1.2.0
 
 - add `_topic` and `_offset` values to output schema.
