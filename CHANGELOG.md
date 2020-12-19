@@ -1,5 +1,9 @@
 # Change Log
 
+## 1.3.1
+
+- **FIX** add `_topic` and `_offset` back into output.
+
 ## 1.3.0
 
 - **FIX** timezone handling for non specific types (i.e. MySQL `DATETIME`).

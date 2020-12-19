@@ -544,7 +544,8 @@ class MySQLDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
       writeStream.stop
 
       // validate results
-      assert(TestUtils.datasetEquality(knownData.withColumn("bigIntDatum", col("bigIntDatum").cast(DecimalType(38,0))), spark.table(tableName).drop("_topic").drop("_offset")))
+      assert(spark.table(tableName).select("_offset").collect.forall(row => Seq(0L,1L).contains(row.getLong(0))))
+      assert(TestUtils.datasetEquality(knownData.withColumn("bigIntDatum", col("bigIntDatum").cast(DecimalType(38,0))).withColumn("_topic", lit(s"dbserver1.inventory.${tableName}")), spark.table(tableName).drop("_offset")))
     } catch {
       case e: Exception => fail(e.getMessage)
     } finally {

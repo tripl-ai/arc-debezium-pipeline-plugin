@@ -606,7 +606,7 @@ object TestUtils {
             "description": "doubleDatum",
             "type": "double",
             "trim": true,
-            "nullable": true,
+            "nullable": false,
             "nullableValues": [
                 "",
                 "null"
@@ -638,25 +638,7 @@ object TestUtils {
             "description": "longDatum",
             "type": "long",
             "trim": true,
-            "nullable": true,
-            "nullableValues": [
-                "",
-                "null"
-            ],
-            "metadata": {
-                "private": false,
-                "securityLevel": 0
-            }
-        },
-        {
-            "id": "1c0eec1d-17cd-45da-8744-7a9ef5b8b086",
-            "name": "bigIntDatum",
-            "description": "bigIntDatum",
-            "type": "long",
-            "precision": 38,
-            "scale": 0,
-            "trim": true,
-            "nullable": true,
+            "nullable": false,
             "nullableValues": [
                 "",
                 "null"
