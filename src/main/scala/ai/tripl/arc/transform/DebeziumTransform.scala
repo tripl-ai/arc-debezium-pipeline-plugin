@@ -239,7 +239,7 @@ object DebeziumTransformStage {
       LongColumn(None, name="_offset", description=Some("An Arc internal field describing the offset in _topic this row was originally sourced from."), nullable=false, nullReplacementValue=None, trim=false, nullableValues="" :: Nil,  metadata=Some("""{"internal": true}"""), formatters=None)
     )
 
-    val schema = Extract.toStructType(cols)
+    val schema = Extract.toStructType(enrichedCols)
     val caseSensitiveSchema = schema.fields.exists(field => field.name.toLowerCase != field.name )
     val eventSchema = StructType(
       Seq(

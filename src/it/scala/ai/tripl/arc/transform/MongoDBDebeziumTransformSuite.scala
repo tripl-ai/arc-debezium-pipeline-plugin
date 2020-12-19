@@ -433,7 +433,8 @@ class MongoDBDebeziumTransformSuite extends FunSuite with BeforeAndAfter {
       writeStream.stop
 
       // validate results
-      assert(TestUtils.datasetEquality(knownData, spark.table(tableName).drop("_topic").drop("_offset")))
+      assert(spark.table(tableName).select("_offset").collect.forall(row => Seq(0L,1L).contains(row.getLong(0))))
+      assert(TestUtils.datasetEquality(knownData.withColumn("_topic", lit(s"dbserver3.inventory.${tableName}")), spark.table(tableName).drop("_offset")))
     } catch {
       case e: Exception => fail(e.getMessage)
     } finally {
