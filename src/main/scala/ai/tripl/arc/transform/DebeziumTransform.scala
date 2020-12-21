@@ -186,6 +186,7 @@ object DebeziumTransformStage {
   val CONNECTOR_MYSQL = "mysql"
   val CONNECTOR_MONGODB = "mongodb"
   val CONNECTOR_POSTGRESQL = "postgresql"
+  val CONNECTOR_ORACLE = "oracle"
 
   val EVENT_KEY_INDEX = 0
   val EVENT_OFFSET_INDEX = 1
@@ -573,7 +574,7 @@ object DebeziumTransformStage {
           val operation = Try(valuePayload.get("op").get.asInstanceOf[String]).getOrElse(throw new Exception("invalid message format. expected 'value.payload.op' to be String."))
 
           val (before, after, keyMask) = connector match {
-            case CONNECTOR_MYSQL | CONNECTOR_POSTGRESQL => {
+            case CONNECTOR_MYSQL | CONNECTOR_POSTGRESQL | CONNECTOR_ORACLE => {
               val before = if (stage.strict) {
                 if (!valuePayload.contains("before")) throw new Exception(s"invalid message format. missing 'value.payload.before' attribute. got ${valuePayload.keys.mkString("["," ,","]")}")
                 val beforeFields = Try(fields.filter { fieldMap => fieldMap.get("field") == Some("before") }.head.get("fields").get.asInstanceOf[List[Map[String, Object]]]).getOrElse(throw new Exception("invalid message format. expected 'value.schema.fields.before' to be Array."))
@@ -639,7 +640,7 @@ object DebeziumTransformStage {
               }
               (before, after, keyMask.toSeq)
             }
-            case default => throw new Exception(s"unsuppored connector '${default}'. expected one of ['${CONNECTOR_MONGODB}','${CONNECTOR_MYSQL}','${CONNECTOR_POSTGRESQL}'].")
+            case default => throw new Exception(s"unsupported connector '${default}'. expected one of ['${CONNECTOR_MONGODB}','${CONNECTOR_MYSQL}','${CONNECTOR_POSTGRESQL}', '${CONNECTOR_ORACLE}'].")
           }
 
           Row(
@@ -702,7 +703,7 @@ object DebeziumTransformStage {
             val events = (x.getSeq[Row](EVENTS_EVENTS_INDEX) ++ y.getSeq[Row](EVENTS_EVENTS_INDEX)).sortBy(event => event.getLong(EVENT_OFFSET_INDEX))
 
             val event = events.head.getString(EVENT_CONNECTOR_INDEX) match {
-              case CONNECTOR_MYSQL | CONNECTOR_POSTGRESQL | CONNECTOR_STATE => validateEvents(events)
+              case CONNECTOR_MYSQL | CONNECTOR_POSTGRESQL | CONNECTOR_ORACLE | CONNECTOR_STATE => validateEvents(events)
               case CONNECTOR_MONGODB => applyMongoPatch(events)
             }
 
@@ -725,7 +726,7 @@ object DebeziumTransformStage {
               val events = e.getSeq[Row](EVENTS_EVENTS_INDEX).sortBy(event => event.getLong(EVENT_OFFSET_INDEX))
 
               val event = events.head.getString(EVENT_CONNECTOR_INDEX) match {
-                case CONNECTOR_MYSQL | CONNECTOR_POSTGRESQL | CONNECTOR_STATE=> validateEvents(events)
+                case CONNECTOR_MYSQL | CONNECTOR_POSTGRESQL | CONNECTOR_ORACLE | CONNECTOR_STATE=> validateEvents(events)
                 case CONNECTOR_MONGODB => applyMongoPatch(events)
               }
 
