@@ -1,5 +1,9 @@
 # Change Log
 
+## 1.3.2
+
+- add support for `oracle` which has mostly the same behavior as the `mysql`/`postgres`.
+
 ## 1.3.1
 
 - **FIX** add `_topic` and `_offset` back into output.
