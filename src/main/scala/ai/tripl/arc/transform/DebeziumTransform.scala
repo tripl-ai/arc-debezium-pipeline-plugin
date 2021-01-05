@@ -49,17 +49,16 @@ class DebeziumTransform extends PipelineStagePlugin with JupyterCompleter {
 
   val version = ai.tripl.arc.debezium.BuildInfo.version
 
-  val snippet = """{
+  def snippet()(implicit arcContext: ARCContext): String = {
+    s"""{
     |  "type": "DebeziumTransform",
     |  "name": "DebeziumTransform",
-    |  "environments": [
-    |    "production",
-    |    "test"
-    |  ],
+    |  "environments": [${arcContext.completionEnvironments.map { env => s""""${env}""""}.mkString(", ")}],
     |  "inputView": "inputView",
     |  "outputView": "outputView",
     |  "schemaURI": "hdfs://*.json"
     |}""".stripMargin
+  }
 
   val documentationURI = new java.net.URI(s"${baseURI}/transform/#debeziumtransform")
 
