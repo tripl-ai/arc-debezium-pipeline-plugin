@@ -1,5 +1,9 @@
 # Change Log
 
+## 1.4.0
+
+- bump to Arc 3.7.0.
+
 ## 1.3.2
 
 - add support for `oracle` which has mostly the same behavior as the `mysql`/`postgres`.
