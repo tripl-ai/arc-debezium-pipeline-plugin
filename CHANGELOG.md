@@ -1,5 +1,9 @@
 # Change Log
 
+## 1.5.0
+
+- bump to Arc 3.13.2.
+
 ## 1.4.0
 
 - bump to Arc 3.7.0.
