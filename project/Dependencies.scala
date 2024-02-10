@@ -2,13 +2,13 @@ import sbt._
 
 object Dependencies {
   // versions
-  lazy val sparkVersion = "3.3.2"
+  lazy val sparkVersion = "3.3.4"
 
   // testing
   val scalaTest = "org.scalatest" %% "scalatest" % "3.0.7" % "test,it"
 
   // arc
-  val arc = "ai.tripl" %% "arc" % "3.13.2" % "provided"
+  val arc = "ai.tripl" %% "arc" % "4.2.0" % "provided"
 
   // spark
   val sparkSql = "org.apache.spark" %% "spark-sql" % sparkVersion % "provided"
@@ -19,7 +19,7 @@ object Dependencies {
 
   val mysql = "mysql" % "mysql-connector-java" % "8.0.22" % "it"
   val mongo = "org.mongodb.spark" %% "mongo-spark-connector" % "3.0.2" % "it"
-  val bson = "org.mongodb" % "bson" % "4.1.1"
+  val bson = "org.mongodb" % "bson" % "4.1.1" % "it"
   val postgresJDBC = "org.postgresql" % "postgresql" % "42.2.8" % "it"
 
   // Project
