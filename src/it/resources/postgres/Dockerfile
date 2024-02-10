@@ -1,4 +1,4 @@
-FROM debezium/postgres:11
+FROM debezium/postgres:11-alpine
 
 LABEL maintainer="Debezium Community"
 
